@@ -42,4 +42,7 @@ export type {
   CoordinateResultSummary,
   PointJSON,
   ExtentJSON,
+  CoordinateGraphicSymbolConfig,
+  CoordinateLayerManagerOptions,
+  CoordinateLayerManagerHandlers,
 } from "./types";

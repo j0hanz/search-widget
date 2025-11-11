@@ -38,6 +38,7 @@ import {
 } from "../extensions/store";
 import {
   useCoordinateSearch,
+  useCoordinateLayerManager,
   useEsriSearchModules,
   useSearchSourceSelector,
   useSearchWidget,
@@ -61,16 +62,6 @@ const isGoToCapableView = (
       typeof (candidate as __esri.MapView | __esri.SceneView).goTo ===
         "function"
   );
-
-const isGraphicsLayerDestroyed = (
-  layer: __esri.GraphicsLayer | null
-): boolean => {
-  if (!layer) return false;
-  const candidate = layer as Partial<__esri.GraphicsLayer> & {
-    destroyed?: boolean;
-  };
-  return Boolean(candidate.destroyed);
-};
 
 const PROJECTION_BY_ID = new Map<string, Sweref99Projection>(
   SWEREF99_PROJECTIONS.map((projection) => [projection.id, projection])
@@ -191,113 +182,27 @@ const Widget = (props: WidgetProps) => {
     dispatch(searchActions.clearCoordinateResult(id));
   });
 
-  const coordinateLayerRef = React.useRef<__esri.GraphicsLayer | null>(null);
-  const coordinateLayerViewRef = React.useRef<__esri.View | null>(null);
   const modulesRef = hooks.useLatest(modules);
-  const mapViewRefLatest = hooks.useLatest(mapView);
-  const coordinateZoomScaleRef = hooks.useLatest(config.coordinateZoomScale);
   const isCoordinateInputRef = hooks.useLatest(widgetState.isCoordinateInput);
   const awaitingModulesRef = React.useRef(false);
   const lastCoordinateTermRef = React.useRef<string>("");
   const coordinateLayerId = `${id}-coordinate-layer`;
-
-  hooks.useUpdateEffect((): void | (() => void) => {
-    const enabled = config.enableCoordinateSearch;
-    const view = mapView?.view;
-    const currentModules = modulesRef.current;
-    const existingLayerRef = coordinateLayerRef.current;
-    const existingViewRef = coordinateLayerViewRef.current;
-
-    const removeLayer = (
-      targetLayer: __esri.GraphicsLayer | null,
-      targetView: __esri.View | null
-    ) => {
-      if (!targetLayer || !targetView?.map) return;
-      const located = targetView.map.findLayerById(targetLayer.id);
-      if (located === targetLayer) {
-        targetView.map.remove(targetLayer);
-      }
-    };
-
-    if (!enabled) {
-      removeLayer(existingLayerRef, existingViewRef);
-      coordinateLayerRef.current = null;
-      coordinateLayerViewRef.current = null;
-      return;
-    }
-
-    if (!view || !currentModules) {
-      return;
-    }
-
-    // Find or create layer for this effect
-    let layer = view.map?.findLayerById(coordinateLayerId) as
-      | __esri.GraphicsLayer
-      | undefined;
-
-    if (!layer) {
-      layer = new currentModules.GraphicsLayer({
-        id: coordinateLayerId,
-        listMode: "hide",
-      });
-      view.map?.add(layer);
-    }
-    coordinateLayerRef.current = layer;
-    coordinateLayerViewRef.current = view;
-
-    return () => {
-      if (layer && view) {
-        removeLayer(layer, view);
-      }
-      if (coordinateLayerRef.current === layer) {
-        coordinateLayerRef.current = null;
-      }
-      if (coordinateLayerViewRef.current === view) {
-        coordinateLayerViewRef.current = null;
-      }
-    };
-  }, [config.enableCoordinateSearch, mapView, modules, coordinateLayerId]);
-
-  const updateCoordinateGraphic = hooks.useEventCallback(
-    (point: __esri.Point) => {
-      const currentModules = modulesRef.current;
-      const layer = coordinateLayerRef.current;
-
-      if (!currentModules || !layer) return;
-      if (isGraphicsLayerDestroyed(layer)) {
-        coordinateLayerRef.current = null;
-        return;
-      }
-
-      try {
-        layer.removeAll();
-        const symbol = new currentModules.SimpleMarkerSymbol({
-          style: COORDINATE_GRAPHIC_SYMBOL.STYLE,
-          color: COORDINATE_GRAPHIC_SYMBOL.COLOR,
-          size: COORDINATE_GRAPHIC_SYMBOL.SIZE,
-          outline: {
-            color: COORDINATE_GRAPHIC_SYMBOL.OUTLINE_COLOR,
-            width: COORDINATE_GRAPHIC_SYMBOL.OUTLINE_WIDTH,
-          },
-        });
-        layer.add(new currentModules.Graphic({ geometry: point, symbol }));
-      } catch (error) {
-        coordinateLayerRef.current = null;
-        console.log("Failed to update coordinate graphic:", error);
-      }
-    }
-  );
-
-  const goToCoordinate = hooks.useEventCallback((point: __esri.Point) => {
-    const view = mapViewRefLatest.current?.view;
-    const zoomScale =
-      coordinateZoomScaleRef.current ?? DEFAULT_COORDINATE_ZOOM_SCALE;
-    if (view && zoomScale > 0) {
-      view
-        .goTo({ target: point, scale: zoomScale }, { animate: true })
-        .catch(() => undefined);
-    }
-  });
+  const { updateGraphic: updateCoordinateGraphic, clearGraphics: clearCoordinateGraphics, goToPoint: goToCoordinate } =
+    useCoordinateLayerManager({
+      id: coordinateLayerId,
+      modules,
+      mapView,
+      enabled: Boolean(config.enableCoordinateSearch),
+      zoomScale: config.coordinateZoomScale,
+      defaultZoomScale: DEFAULT_COORDINATE_ZOOM_SCALE,
+      symbol: {
+        style: COORDINATE_GRAPHIC_SYMBOL.STYLE,
+        color: COORDINATE_GRAPHIC_SYMBOL.COLOR,
+        size: COORDINATE_GRAPHIC_SYMBOL.SIZE,
+        outlineColor: COORDINATE_GRAPHIC_SYMBOL.OUTLINE_COLOR,
+        outlineWidth: COORDINATE_GRAPHIC_SYMBOL.OUTLINE_WIDTH,
+      },
+    });
 
   const coordinateSearch = useCoordinateSearch({
     modules,
@@ -324,7 +229,7 @@ const Widget = (props: WidgetProps) => {
 
       setError(message || translate("coordinateErrorGeneric"));
       clearCoordinateResultState();
-      coordinateLayerRef.current?.removeAll();
+      clearCoordinateGraphics();
     },
   });
 
@@ -339,12 +244,7 @@ const Widget = (props: WidgetProps) => {
       !modulesCurrent?.Point ||
       !modulesCurrent?.SpatialReference
     ) {
-      coordinateLayerRef.current?.removeAll();
-      return;
-    }
-    const layer = coordinateLayerRef.current;
-    if (!layer || isGraphicsLayerDestroyed(layer)) {
-      coordinateLayerRef.current = null;
+      clearCoordinateGraphics();
       return;
     }
 
@@ -353,7 +253,7 @@ const Widget = (props: WidgetProps) => {
 
       if (!isValidPointData(pointData)) {
         console.log("Search widget: invalid stored coordinate data");
-        layer.removeAll();
+        clearCoordinateGraphics();
         return;
       }
 
@@ -362,7 +262,7 @@ const Widget = (props: WidgetProps) => {
         console.log(
           "Search widget: invalid spatial reference in stored coordinate"
         );
-        layer.removeAll();
+        clearCoordinateGraphics();
         return;
       }
 
@@ -380,25 +280,19 @@ const Widget = (props: WidgetProps) => {
         console.log(
           "Search widget: failed to construct valid Point from stored data"
         );
-        layer.removeAll();
+        clearCoordinateGraphics();
         return;
       }
 
-      if (
-        coordinateLayerRef.current === layer &&
-        !isGraphicsLayerDestroyed(layer)
-      ) {
-        updateCoordinateGraphic(point);
-      }
+      updateCoordinateGraphic(point);
     } catch (error) {
       console.log("Search widget: failed to render stored coordinate", error);
-      if (coordinateLayerRef.current === layer) {
-        layer.removeAll();
-      }
+      clearCoordinateGraphics();
     }
   }, [
     config.enableCoordinateSearch,
     coordinateResult,
+    clearCoordinateGraphics,
     modulesRef,
     updateCoordinateGraphic,
   ]);
@@ -406,7 +300,7 @@ const Widget = (props: WidgetProps) => {
   const clearCoordinateArtifacts = hooks.useEventCallback(() => {
     awaitingModulesRef.current = false;
     clearCoordinateResultState();
-    coordinateLayerRef.current?.removeAll();
+    clearCoordinateGraphics();
     setCoordinateLoading(false);
     lastCoordinateTermRef.current = "";
   });

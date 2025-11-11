@@ -280,6 +280,30 @@ export interface UseSearchWidgetParams {
 
 export type TimeoutHandle = ReturnType<typeof setTimeout>;
 
+export interface CoordinateGraphicSymbolConfig {
+  style: __esri.SimpleMarkerSymbolProperties["style"];
+  color: __esri.ColorProperties;
+  size: number;
+  outlineColor: __esri.ColorProperties;
+  outlineWidth: number;
+}
+
+export interface CoordinateLayerManagerOptions {
+  id: string;
+  modules: EsriSearchModules | null;
+  mapView: JimuMapView | null;
+  enabled: boolean;
+  zoomScale?: number | null;
+  defaultZoomScale: number;
+  symbol: CoordinateGraphicSymbolConfig;
+}
+
+export interface CoordinateLayerManagerHandlers {
+  updateGraphic: (point: __esri.Point) => void;
+  clearGraphics: () => void;
+  goToPoint: (point: __esri.Point) => void;
+}
+
 export interface BaseSearchAction extends Action<SearchActionType> {
   widgetId: string;
 }

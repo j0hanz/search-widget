@@ -5,6 +5,9 @@ import { CoordinateInputFormat } from "../config/enums";
 import type {
   CoordinateSearchOptions,
   CoordinateSearchResult,
+  CoordinateGraphicSymbolConfig,
+  CoordinateLayerManagerHandlers,
+  CoordinateLayerManagerOptions,
   CoordinateTransformOptions,
   EsriSearchModules,
   LayerSearchSourceConfig,
@@ -64,6 +67,16 @@ interface DebouncedCoordinateSearch {
   (input: string): Promise<CoordinateSearchResult>;
   cancel?: () => void;
 }
+
+const isGraphicsLayerDestroyed = (
+  layer: Maybe<__esri.GraphicsLayer>
+): boolean => {
+  if (!layer) return false;
+  const candidate = layer as Partial<__esri.GraphicsLayer> & {
+    destroyed?: boolean;
+  };
+  return Boolean(candidate.destroyed);
+};
 
 export const useEsriSearchModules = () => {
   const [modules, setModules] = React.useState<EsriSearchModules | null>(null);
@@ -556,6 +569,192 @@ export const useSearchSourceSelector = (params: {
     hasMultiple: sources.length > 1,
     changeHandler,
   };
+};
+
+const createMarkerSymbol = (
+  modules: EsriSearchModules,
+  symbolConfig: CoordinateGraphicSymbolConfig
+) =>
+  new modules.SimpleMarkerSymbol({
+    style: symbolConfig.style,
+    color: symbolConfig.color,
+    size: symbolConfig.size,
+    outline: {
+      color: symbolConfig.outlineColor,
+      width: symbolConfig.outlineWidth,
+    },
+  });
+
+export const useCoordinateLayerManager = (
+  options: CoordinateLayerManagerOptions
+): CoordinateLayerManagerHandlers => {
+  const {
+    id,
+    modules,
+    mapView,
+    enabled,
+    zoomScale,
+    defaultZoomScale,
+    symbol,
+  } = options;
+
+  const modulesRef = hooks.useLatest(modules);
+  const mapViewRef = hooks.useLatest(mapView);
+  const zoomScaleRef = hooks.useLatest(
+    typeof zoomScale === "number" && Number.isFinite(zoomScale)
+      ? zoomScale
+      : null
+  );
+  const defaultZoomScaleRef = hooks.useLatest(defaultZoomScale);
+  const layerRef = React.useRef<__esri.GraphicsLayer | null>(null);
+  const viewRef = React.useRef<__esri.View | null>(null);
+
+  const removeLayer = hooks.useEventCallback(
+    (
+      targetLayer: Maybe<__esri.GraphicsLayer>,
+      targetView: Maybe<__esri.View>
+    ) => {
+      if (!targetLayer || !targetView?.map) return;
+      const located = targetView.map.findLayerById(targetLayer.id);
+      if (located === targetLayer) {
+        targetView.map.remove(targetLayer);
+      }
+    }
+  );
+
+  hooks.useUpdateEffect((): void | (() => void) => {
+    const view = mapView?.view ?? null;
+    const currentModules = modulesRef.current;
+    const existingLayer = layerRef.current;
+    const existingView = viewRef.current;
+
+    if (!enabled) {
+      removeLayer(existingLayer, existingView);
+      if (layerRef.current === existingLayer) layerRef.current = null;
+      if (viewRef.current === existingView) viewRef.current = null;
+      return;
+    }
+
+    if (!view || !currentModules) {
+      return;
+    }
+
+    let layer = view.map?.findLayerById(id) as __esri.GraphicsLayer | undefined;
+
+    if (!layer) {
+      try {
+        layer = new currentModules.GraphicsLayer({
+          id,
+          listMode: "hide",
+        });
+        view.map?.add(layer);
+      } catch (error) {
+        console.log(
+          "Search widget: failed to initialize coordinate graphics layer",
+          error
+        );
+        return;
+      }
+    }
+
+    layerRef.current = layer ?? null;
+    viewRef.current = view;
+
+    return () => {
+      if (layer && view) {
+        removeLayer(layer, view);
+      }
+      if (layerRef.current === layer) {
+        layerRef.current = null;
+      }
+      if (viewRef.current === view) {
+        viewRef.current = null;
+      }
+    };
+  }, [enabled, mapView, modules, id, removeLayer]);
+
+  const clearGraphics = hooks.useEventCallback(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    if (isGraphicsLayerDestroyed(layer)) {
+      layerRef.current = null;
+      return;
+    }
+
+    try {
+      layer.removeAll();
+    } catch (error) {
+      console.log(
+        "Search widget: failed to clear coordinate graphics",
+        error
+      );
+      if (layerRef.current === layer) {
+        layerRef.current = null;
+      }
+    }
+  });
+
+  const updateGraphic = hooks.useEventCallback((point: __esri.Point) => {
+    const layer = layerRef.current;
+    const currentModules = modulesRef.current;
+
+    if (!layer || !currentModules) return;
+    if (isGraphicsLayerDestroyed(layer)) {
+      layerRef.current = null;
+      return;
+    }
+
+    try {
+      layer.removeAll();
+      const symbolInstance = createMarkerSymbol(currentModules, symbol);
+      const graphic = new currentModules.Graphic({
+        geometry: point,
+        symbol: symbolInstance,
+      });
+      layer.add(graphic);
+    } catch (error) {
+      console.log(
+        "Search widget: failed to update coordinate graphic",
+        error
+      );
+      if (layerRef.current === layer) {
+        layerRef.current = null;
+      }
+    }
+  });
+
+  const goToPoint = hooks.useEventCallback((point: __esri.Point) => {
+    const viewCandidate =
+      (viewRef.current ?? mapViewRef.current?.view ?? null) as Maybe<
+        __esri.MapView | __esri.SceneView
+      >;
+    if (!viewCandidate || typeof viewCandidate.goTo !== "function") {
+      return;
+    }
+
+    const desiredScale =
+      zoomScaleRef.current ?? defaultZoomScaleRef.current ?? null;
+
+    if (
+      desiredScale === null ||
+      !Number.isFinite(desiredScale) ||
+      desiredScale <= 0
+    ) {
+      return;
+    }
+
+    viewCandidate
+      .goTo({ target: point, scale: desiredScale }, { animate: true })
+      .catch(() => undefined);
+  });
+
+  hooks.useUnmount(() => {
+    removeLayer(layerRef.current, viewRef.current);
+    layerRef.current = null;
+    viewRef.current = null;
+  });
+
+  return { updateGraphic, clearGraphics, goToPoint };
 };
 
 export const useDebounce = <T>(value: T, delay: number): T => {
