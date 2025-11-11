@@ -80,7 +80,7 @@ export interface SearchResultSummary {
   attributes?: AttributesMap;
 }
 
-interface BaseSearchSource {
+export interface BaseSearchSource {
   id: string;
   name: string;
   placeholder?: string;

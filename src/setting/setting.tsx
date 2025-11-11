@@ -94,45 +94,10 @@ const toSearchConfig = (config: IMSearchConfig | undefined): SearchConfig => {
   };
 };
 
-const buildSourceConfig = (
-  source: EditableSearchSource
-): SearchSourceConfig => {
-  const base = {
-    id: source.id || `${source.type}-${Date.now()}`,
-    name: sanitizeNonEmptyText(source.name, ""),
-    placeholder: sanitizeNonEmptyText(source.placeholder, ""),
-    url: sanitizeUrlInput(source.url ?? ""),
-    maxSuggestions: source.maxSuggestions,
-  };
-
-  if (source.type === SearchSourceType.Layer) {
-    const layerSource = source as EditableSearchSource &
-      LayerSearchSourceConfig;
-    const searchFieldsArray = layerSource.searchFieldsText
-      ?.split(",")
-      .map(sanitizeText)
-      .filter(Boolean);
-    const minSuggest = parsePositiveInt(
-      layerSource.minSuggestCharacters ?? MIN_SEARCH_LENGTH,
-      MIN_SEARCH_LENGTH
-    );
-
-    return {
-      ...base,
-      type: SearchSourceType.Layer,
-      layerId: sanitizeNonEmptyText(layerSource.layerId || "", ""),
-      searchFields: searchFieldsArray ?? [],
-      displayField: sanitizeText(layerSource.displayField ?? "") || undefined,
-      exactMatch: Boolean(layerSource.exactMatch),
-      minSuggestCharacters: minSuggest,
-      resultSymbol: layerSource.resultSymbol
-        ? { ...layerSource.resultSymbol }
-        : undefined,
-    };
-  }
-
-  const locatorSource = source as EditableSearchSource &
-    LocatorSearchSourceConfig;
+const buildLocatorConfig = (
+  base: { id: string; name: string; placeholder?: string; url: string; maxSuggestions?: number },
+  locatorSource: EditableSearchSource & LocatorSearchSourceConfig
+): LocatorSearchSourceConfig => {
   const categoriesArray = parseArrayField(locatorSource.categories);
   const outFieldsArray = parseArrayField(locatorSource.outFields);
   const countryCode = sanitizeText(locatorSource.countryCode ?? "")
@@ -141,7 +106,11 @@ const buildSourceConfig = (
     .toUpperCase();
 
   return {
-    ...base,
+    id: base.id,
+    name: base.name,
+    placeholder: base.placeholder,
+    url: base.url,
+    maxSuggestions: base.maxSuggestions,
     type: SearchSourceType.Locator,
     apiKey: sanitizeText(locatorSource.apiKey ?? "") || undefined,
     categories: categoriesArray,
@@ -153,6 +122,53 @@ const buildSourceConfig = (
         : undefined,
     outFields: outFieldsArray.length ? outFieldsArray : undefined,
   };
+};
+
+const buildLayerConfig = (
+  base: { id: string; name: string; placeholder?: string; url: string; maxSuggestions?: number },
+  layerSource: EditableSearchSource & LayerSearchSourceConfig
+): LayerSearchSourceConfig => {
+  const searchFieldsArray = layerSource.searchFieldsText
+    ?.split(",")
+    .map(sanitizeText)
+    .filter(Boolean);
+  const minSuggest = parsePositiveInt(
+    layerSource.minSuggestCharacters ?? MIN_SEARCH_LENGTH,
+    MIN_SEARCH_LENGTH
+  );
+
+  return {
+    id: base.id,
+    name: base.name,
+    placeholder: base.placeholder,
+    url: base.url,
+    maxSuggestions: base.maxSuggestions,
+    type: SearchSourceType.Layer,
+    layerId: sanitizeNonEmptyText(layerSource.layerId || "", ""),
+    searchFields: searchFieldsArray ?? [],
+    displayField: sanitizeText(layerSource.displayField ?? "") || undefined,
+    exactMatch: Boolean(layerSource.exactMatch),
+    minSuggestCharacters: minSuggest,
+    resultSymbol: layerSource.resultSymbol
+      ? { ...layerSource.resultSymbol }
+      : undefined,
+  };
+};
+
+const buildSourceConfig = (
+  source: EditableSearchSource
+): SearchSourceConfig => {
+  const base = {
+    id: source.id || `${source.type}-${Date.now()}`,
+    name: sanitizeNonEmptyText(source.name, ""),
+    placeholder: sanitizeNonEmptyText(source.placeholder, ""),
+    url: sanitizeUrlInput(source.url ?? ""),
+    maxSuggestions: source.maxSuggestions,
+  };
+
+  return source.type === SearchSourceType.Layer
+    ? buildLayerConfig(base, source as EditableSearchSource & LayerSearchSourceConfig)
+    : buildLocatorConfig(base, source as EditableSearchSource & LocatorSearchSourceConfig);
 };
 
 const toConfigSources = (
@@ -241,63 +257,56 @@ const Setting = (props: SettingProps) => {
     }
   );
 
+  const sanitizeSourceValue = hooks.useEventCallback(
+    (key: string, rawValue: unknown, targetSource: EditableSearchSource) => {
+      switch (key) {
+        case "url":
+          return sanitizeUrlInput(toPlainString(rawValue));
+        case "maxSuggestions":
+          return parsePositiveInt(
+            rawValue as number | string,
+            targetSource?.maxSuggestions ?? maxSuggestions
+          );
+        case "exactMatch":
+        case "withinViewEnabled":
+          return Boolean(rawValue);
+        case "categories":
+        case "outFields":
+          return Array.isArray(rawValue)
+            ? rawValue.map(sanitizeText).filter(Boolean)
+            : [];
+        case "countryCode": {
+          const sanitized = sanitizeText(toPlainString(rawValue))
+            .replace(/[^A-Za-z]/g, "")
+            .slice(0, 3)
+            .toUpperCase();
+          return sanitized || undefined;
+        }
+        case "locationType": {
+          const normalized = sanitizeText(toPlainString(rawValue)).toLowerCase();
+          return normalized === "street" || normalized === "rooftop"
+            ? normalized
+            : undefined;
+        }
+        case "minSuggestCharacters":
+          return parsePositiveInt(rawValue as number | string, MIN_SEARCH_LENGTH);
+        case "resultSymbol":
+          return (rawValue as __esri.SimpleMarkerSymbolProperties) ?? undefined;
+        default:
+          return sanitizeText(toPlainString(rawValue));
+      }
+    }
+  );
+
   const handleSourceChange = hooks.useEventCallback(
     (index: number, key: string, rawValue: unknown) => {
       const targetSource = localSources[index];
-      if (!targetSource) {
-        return;
-      }
-      const sanitizeValue = () => {
-        switch (key) {
-          case "url":
-            return sanitizeUrlInput(toPlainString(rawValue));
-          case "maxSuggestions":
-            return parsePositiveInt(
-              rawValue as number | string,
-              targetSource?.maxSuggestions ?? maxSuggestions
-            );
-          case "exactMatch":
-          case "withinViewEnabled":
-            return Boolean(rawValue);
-          case "categories":
-            return Array.isArray(rawValue)
-              ? rawValue.map(sanitizeText).filter(Boolean)
-              : [];
-          case "countryCode": {
-            const sanitized = sanitizeText(toPlainString(rawValue))
-              .replace(/[^A-Za-z]/g, "")
-              .slice(0, 3)
-              .toUpperCase();
-            return sanitized || undefined;
-          }
-          case "locationType": {
-            const normalized = sanitizeText(
-              toPlainString(rawValue)
-            ).toLowerCase();
-            return normalized === "street" || normalized === "rooftop"
-              ? normalized
-              : undefined;
-          }
-          case "outFields":
-            return Array.isArray(rawValue)
-              ? rawValue.map(sanitizeText).filter(Boolean)
-              : [];
-          case "minSuggestCharacters":
-            return parsePositiveInt(
-              rawValue as number | string,
-              MIN_SEARCH_LENGTH
-            );
-          case "resultSymbol":
-            return (
-              (rawValue as __esri.SimpleMarkerSymbolProperties) ?? undefined
-            );
-          default:
-            return sanitizeText(toPlainString(rawValue));
-        }
-      };
+      if (!targetSource) return;
+
+      const sanitizedValue = sanitizeSourceValue(key, rawValue, targetSource);
       updateSources(
         localSources.map((source, idx) =>
-          idx === index ? { ...source, [key]: sanitizeValue() } : source
+          idx === index ? { ...source, [key]: sanitizedValue } : source
         )
       );
     }

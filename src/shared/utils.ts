@@ -108,20 +108,26 @@ export const sanitizeUrlInput = (value: string): string => {
   }
 };
 
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+const toNumber = (value: number | string): number =>
+  typeof value === "number" ? value : parseFloat(value);
+
 export const parsePositiveInt = (
   value: number | string,
   fallback: number
 ): number => {
   const num = typeof value === "number" ? value : parseInt(value, 10);
-  return Number.isFinite(num) && num > 0 ? Math.round(num) : fallback;
+  return isFiniteNumber(num) && num > 0 ? Math.round(num) : fallback;
 };
 
 export const parsePositiveNumber = (
   value: number | string,
   fallback: number
 ): number => {
-  const num = typeof value === "number" ? value : parseFloat(value);
-  return Number.isFinite(num) && num > 0 ? num : fallback;
+  const num = toNumber(value);
+  return isFiniteNumber(num) && num > 0 ? num : fallback;
 };
 
 const toPointGeometry = (
@@ -448,6 +454,7 @@ const normalizeNumericString = (raw: string): string => {
 };
 
 const parseNumeric = (raw: string): number | null => {
+  // Prevent overflow in Number.parseFloat (IEEE 754 limit ~15-17 significant digits)
   const rawDigitCount = raw.replace(/[^0-9]/g, "").length;
   if (rawDigitCount > 18) return null;
 
@@ -569,16 +576,10 @@ const buildCoordinateResult = (
 ): CoordinateParseResult => {
   if (isLikelyWgs84(easting, northing))
     return { success: false, error: "coordinateErrorNotSweref" };
-  if (!validateRange(easting, northing))
+  if (!isCoordinateInRange({ easting, northing }))
     return { success: false, error: "coordinateErrorOutOfRange" };
   return { success: true, easting, northing, format, sanitized, warning };
 };
-
-const validateRange = (easting: number, northing: number): boolean =>
-  easting >= MIN_EASTING &&
-  easting <= MAX_EASTING &&
-  northing >= MIN_NORTHING &&
-  northing <= MAX_NORTHING;
 
 export const parseCoordinateString = (input: string): CoordinateParseResult => {
   if (!input) return { success: false, error: "coordinateErrorEmpty" };
@@ -646,7 +647,7 @@ export const normalizeCoordinates = (
 ): CoordinateParseResult => {
   if (isLikelyWgs84(easting, northing))
     return { success: false, error: "coordinateErrorNotSweref" };
-  if (!validateRange(easting, northing))
+  if (!isCoordinateInRange({ easting, northing }))
     return { success: false, error: "coordinateErrorOutOfRange" };
   return {
     success: true,
@@ -668,10 +669,12 @@ export const isValidSpatialReference = (
   sr: __esri.SpatialReferenceProperties | null | undefined
 ): boolean => {
   if (!sr || typeof sr !== "object") return false;
-  const hasValidWkid =
-    typeof sr.wkid === "number" && Number.isFinite(sr.wkid) && sr.wkid > 0;
-  const hasValidWkt = typeof sr.wkt === "string" && sr.wkt.trim().length > 0;
-  return hasValidWkid || hasValidWkt;
+  
+  if (typeof sr.wkid === "number" && isFiniteNumber(sr.wkid) && sr.wkid > 0) {
+    return true;
+  }
+  
+  return typeof sr.wkt === "string" && sr.wkt.trim().length > 0;
 };
 
 export const isValidPointGeometry = (
@@ -690,12 +693,9 @@ export const isValidPointData = (
   data: PointJSON | null | undefined
 ): boolean => {
   if (!data) return false;
-  return (
-    isValidPointGeometry(data) &&
-    data.spatialReference != null &&
-    typeof data.spatialReference === "object" &&
-    isValidSpatialReference(data.spatialReference)
-  );
+  if (!isValidPointGeometry(data)) return false;
+  if (!data.spatialReference || typeof data.spatialReference !== "object") return false;
+  return isValidSpatialReference(data.spatialReference);
 };
 
 export interface CoordinateDetectionResult {
@@ -816,6 +816,10 @@ const isWithinBounds = (
     ? isInRange(value, eMin, eMax)
     : isInRange(value, nMin, nMax);
 };
+
+const isCoordinateInRange = (coord: { easting: number; northing: number }): boolean =>
+  isInRange(coord.easting, MIN_EASTING, MAX_EASTING) &&
+  isInRange(coord.northing, MIN_NORTHING, MAX_NORTHING);
 
 const findMatchingZones = (
   easting: number,
@@ -970,6 +974,18 @@ const withinProjectionBounds = (
   );
 };
 
+const checkBoundaryWarning = (
+  easting: number,
+  projection: Sweref99Projection
+): string[] => {
+  const { bounds } = projection;
+  const buffer = COORDINATE_WARNING_BUFFER_METERS;
+  const nearWest = Math.abs(easting - bounds.eMin) <= buffer;
+  const nearEast = Math.abs(bounds.eMax - easting) <= buffer;
+  
+  return nearWest || nearEast ? ["coordinateWarningNearBoundary"] : [];
+};
+
 export const validateCoordinates = (
   params: ValidateCoordinatesParams
 ): CoordinateValidationResult => {
@@ -977,7 +993,7 @@ export const validateCoordinates = (
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  if (!Number.isFinite(easting) || !Number.isFinite(northing)) {
+  if (!isFiniteNumber(easting) || !isFiniteNumber(northing)) {
     return { valid: false, errors: ["coordinateErrorInvalidNumber"], warnings };
   }
 
@@ -988,11 +1004,7 @@ export const validateCoordinates = (
   }
 
   if (!errors.length && projection) {
-    const { bounds } = projection;
-    const buffer = COORDINATE_WARNING_BUFFER_METERS;
-    const nearWest = Math.abs(easting - bounds.eMin) <= buffer;
-    const nearEast = Math.abs(bounds.eMax - easting) <= buffer;
-    if (nearWest || nearEast) warnings.push("coordinateWarningNearBoundary");
+    warnings.push(...checkBoundaryWarning(easting, projection));
   }
 
   return { valid: errors.length === 0, errors, warnings };
@@ -1042,6 +1054,13 @@ const loadProjectionModule = async (
         }),
         timeoutPromise,
       ]);
+    } catch (error) {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      projectionLoadInProgress.delete(projectionModule);
+      projectionLoadCache.delete(projectionModule);
+      throw error instanceof Error
+        ? error
+        : new Error(typeof error === "string" ? error : "Projection load failed");
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       projectionLoadInProgress.delete(projectionModule);
@@ -1072,17 +1091,7 @@ export const createSweref99Point = (params: TransformParams): __esri.Point => {
   const { modules, projection, easting, northing } = params;
   const { SpatialReference, Point } = modules;
 
-  if (
-    !projection?.epsg ||
-    typeof projection.epsg !== "number" ||
-    projection.epsg <= 0
-  ) {
-    throw new Error("coordinateErrorInvalidProjection");
-  }
-
-  if (!Number.isFinite(easting) || !Number.isFinite(northing)) {
-    throw new Error("coordinateErrorInvalidCoordinates");
-  }
+  validateTransformParams(params);
 
   return new Point({
     x: easting,
@@ -1091,40 +1100,54 @@ export const createSweref99Point = (params: TransformParams): __esri.Point => {
   });
 };
 
+const validateTransformParams = (params: TransformParams): void => {
+  if (!params.spatialReference) {
+    throw new Error("coordinateErrorNoSpatialReference");
+  }
+  if (!params.projection?.epsg || !isFiniteNumber(params.projection.epsg) || params.projection.epsg <= 0) {
+    throw new Error("coordinateErrorInvalidProjection");
+  }
+  if (!isFiniteNumber(params.easting) || !isFiniteNumber(params.northing)) {
+    throw new Error("coordinateErrorInvalidCoordinates");
+  }
+};
+
+const validateProjectedPoint = (point: __esri.Point): void => {
+  if (!isFiniteNumber(point.x) || !isFiniteNumber(point.y)) {
+    throw new Error("coordinateErrorTransform");
+  }
+};
+
 export const transformSweref99ToMap = async (
   params: TransformParams
 ): Promise<__esri.Point | null> => {
   const { modules, spatialReference } = params;
   const { projection: projectionModule } = modules;
 
-  if (!spatialReference) throw new Error("coordinateErrorNoSpatialReference");
+  validateTransformParams(params);
 
   const sourcePoint = createSweref99Point(params);
-  if (sourcePoint.spatialReference?.wkid === spatialReference.wkid)
+  if (sourcePoint.spatialReference?.wkid === spatialReference.wkid) {
     return sourcePoint;
+  }
 
   try {
     await loadProjectionModule(projectionModule);
-    const projectedGeometry = projectionModule.project(
-      sourcePoint,
-      spatialReference
-    );
-    if (!isPointGeometry(projectedGeometry))
-      throw new Error("coordinateErrorTransform");
-
-    if (
-      !Number.isFinite(projectedGeometry.x) ||
-      !Number.isFinite(projectedGeometry.y)
-    ) {
+    const projectedGeometry = projectionModule.project(sourcePoint, spatialReference);
+    
+    if (!isPointGeometry(projectedGeometry)) {
       throw new Error("coordinateErrorTransform");
     }
 
-    if (!projectedGeometry.spatialReference)
+    validateProjectedPoint(projectedGeometry);
+
+    if (!projectedGeometry.spatialReference) {
       projectedGeometry.spatialReference = spatialReference;
+    }
+    
     return projectedGeometry;
   } catch (error) {
-    throw error instanceof Error
-      ? error
-      : new Error(error != null ? String(error) : "coordinateErrorTransform");
+    if (error instanceof Error) throw error;
+    throw new Error(error != null ? String(error) : "coordinateErrorTransform");
   }
 };

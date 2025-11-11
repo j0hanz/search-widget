@@ -66,9 +66,18 @@ const isGoToCapableView = (
 ): candidate is __esri.MapView | __esri.SceneView =>
   Boolean(
     candidate &&
-      typeof (candidate as __esri.MapView | __esri.SceneView).goTo ===
-        "function"
+      typeof (candidate as __esri.MapView | __esri.SceneView).goTo === "function"
   );
+
+const isGraphicsLayerDestroyed = (
+  layer: __esri.GraphicsLayer | null
+): boolean => {
+  if (!layer) return false;
+  const candidate = layer as Partial<__esri.GraphicsLayer> & {
+    destroyed?: boolean;
+  };
+  return Boolean(candidate.destroyed);
+};
 
 const PROJECTION_BY_ID = new Map<string, Sweref99Projection>(
   SWEREF99_PROJECTIONS.map((projection) => [projection.id, projection])
@@ -76,8 +85,10 @@ const PROJECTION_BY_ID = new Map<string, Sweref99Projection>(
 
 const resolveProjection = (
   projectionId: string | undefined
-): Sweref99Projection | null =>
-  projectionId ? (PROJECTION_BY_ID.get(projectionId) ?? null) : null;
+): Sweref99Projection | null => {
+  if (!projectionId) return null;
+  return PROJECTION_BY_ID.get(projectionId) ?? null;
+};
 
 const toCoordinateResultSummary = (
   result: CoordinateSearchResult
@@ -94,16 +105,6 @@ const toCoordinateResultSummary = (
       ? (result.point.toJSON() as PointJSON)
       : null,
 });
-
-const isGraphicsLayerDestroyed = (
-  layer: __esri.GraphicsLayer | null
-): boolean => {
-  if (!layer) return false;
-  const candidate = layer as Partial<__esri.GraphicsLayer> & {
-    destroyed?: boolean;
-  };
-  return Boolean(candidate.destroyed);
-};
 
 const normalizeConfigValue = (
   config: IMSearchConfig | undefined
@@ -399,6 +400,7 @@ const Widget = (props: WidgetProps) => {
 
   hooks.useUpdateEffect(() => {
     if (!config.enableCoordinateSearch) return;
+    if (!widgetState.isCoordinateInput) return;
     const summary = coordinateResult;
     const modulesCurrent = modulesRef.current;
     if (
@@ -766,22 +768,26 @@ const Widget = (props: WidgetProps) => {
     });
   });
 
+  const renderCoordinateResults = () => {
+    if (coordinateLoading) {
+      return (
+        <div css={styles.coordinateLoading}>
+          <Loading />
+          <Typography>{translate("searching")}</Typography>
+        </div>
+      );
+    }
+
+    if (coordinateResult) {
+      return renderCoordinateDetails();
+    }
+
+    return null;
+  };
+
   const renderResults = () => {
     if (isCoordinateActive) {
-      if (coordinateLoading) {
-        return (
-          <div css={styles.coordinateLoading}>
-            <Loading />
-            <Typography>{translate("searching")}</Typography>
-          </div>
-        );
-      }
-
-      if (coordinateResult) {
-        return renderCoordinateDetails();
-      }
-
-      return null;
+      return renderCoordinateResults();
     }
 
     if (!results.length) {
