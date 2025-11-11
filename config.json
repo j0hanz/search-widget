@@ -1,0 +1,17 @@
+{
+  "useMapWidget": null,
+  "searchSources": [
+    {
+      "id": "default-locator",
+      "type": "locator",
+      "name": "ArcGIS World Geocoding Service",
+      "placeholder": "Find address or place",
+      "url": "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer",
+      "maxSuggestions": 6
+    }
+  ],
+  "placeholder": "Find address or place",
+  "maxSuggestions": 6,
+  "zoomScale": 10000,
+  "persistLastSearch": true
+}

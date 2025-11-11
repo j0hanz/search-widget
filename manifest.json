@@ -1,0 +1,26 @@
+{
+  "name": "search-widget",
+  "label": "Search",
+  "type": "widget",
+  "version": "1.18.0",
+  "exbVersion": "1.18.0",
+  "author": "j0hanz",
+  "description": "A widget for searching locations and features on the map.",
+  "icon": "icon.svg",
+  "dependency": "jimu-arcgis",
+  "extensions": [
+    {
+      "point": "REDUX_STORE",
+      "uri": "extensions/store"
+    }
+  ],
+  "defaultSize": {
+    "width": 400,
+    "autoHeight": true
+  },
+    "translatedLocales": [
+    "en",
+    "sv"
+  ],
+  "settingDependency": ["jimu-arcgis"]
+}
