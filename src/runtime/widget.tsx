@@ -182,7 +182,6 @@ const normalizeConfigValue = (
     : [{ ...DEFAULT_LOCATOR_SOURCE }];
 
   return {
-    useMapWidget: mutable.useMapWidget,
     placeholder,
     maxSuggestions,
     zoomScale: mutable.zoomScale ?? DEFAULT_ZOOM_SCALE,
@@ -242,10 +241,21 @@ const useSearchResultSummaries = (results: unknown): SearchResultSummary[] => {
 };
 
 const Widget = (props: WidgetProps) => {
-  const { id } = props;
+  const { id, useMapWidgetIds } = props;
   const translate = hooks.useTranslation(defaultMessages);
   const cfg = useNormalizedConfig(props.config);
   const styles = useUiStyles(cfg.styleVariant ?? DEFAULT_STYLE_VARIANT);
+
+  const mapWidgetId = Array.isArray(useMapWidgetIds)
+    ? (() => {
+        for (const value of useMapWidgetIds) {
+          if (typeof value !== "string") continue;
+          const trimmed = value.trim();
+          if (trimmed) return trimmed;
+        }
+        return null;
+      })()
+    : null;
 
   const defaultStateRef = React.useRef(createDefaultWidgetState());
   const dispatch = ReactRedux.useDispatch<Dispatch<SearchWidgetAction>>();
@@ -272,6 +282,11 @@ const Widget = (props: WidgetProps) => {
   const handleActiveViewChange = hooks.useEventCallback((view: JimuMapView) => {
     setMapView(view);
   });
+  hooks.useUpdateEffect(() => {
+    if (!mapWidgetId) {
+      setMapView(null);
+    }
+  }, [mapWidgetId]);
   const handleContainerRef = hooks.useEventCallback(
     (node: HTMLDivElement | null) => {
       node !== containerEl && setContainerEl(node);
@@ -978,9 +993,9 @@ const Widget = (props: WidgetProps) => {
           text={translate("errorSearchFailed")}
         />
       )}
-      {cfg.useMapWidget && (
+      {mapWidgetId && (
         <JimuMapViewComponent
-          useMapWidgetId={cfg.useMapWidget}
+          useMapWidgetId={mapWidgetId}
           onActiveViewChange={handleActiveViewChange}
         />
       )}

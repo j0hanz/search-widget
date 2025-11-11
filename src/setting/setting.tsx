@@ -79,7 +79,6 @@ const normalizeSource = (source: SearchSourceConfig): EditableSearchSource => {
 const toSearchConfig = (config: IMSearchConfig | undefined): SearchConfig => {
   const mutable = config?.asMutable({ deep: true });
   return {
-    useMapWidget: mutable?.useMapWidget ?? null,
     placeholder: mutable?.placeholder || DEFAULT_PLACEHOLDER,
     maxSuggestions: mutable?.maxSuggestions ?? DEFAULT_MAX_SUGGESTIONS,
     zoomScale: mutable?.zoomScale ?? DEFAULT_ZOOM_SCALE,
@@ -464,11 +463,29 @@ const Setting = (props: SettingProps) => {
 
   const handleMapWidgetChange = hooks.useEventCallback(
     (useMapWidgetIds: string[]) => {
-      const mapWidgetId = useMapWidgetIds?.[0] ?? null;
-      commitConfig({ useMapWidget: mapWidgetId });
+      const sanitizedIds = Array.isArray(useMapWidgetIds)
+        ? useMapWidgetIds.filter((value): value is string => {
+            if (typeof value !== "string") return false;
+            return value.trim().length > 0;
+          })
+        : [];
+      const nextConfig = SeamlessImmutable({
+        searchSources: toConfigSources(localSources),
+        placeholder,
+        maxSuggestions,
+        zoomScale,
+        persistLastSearch,
+        enableCoordinateSearch,
+        coordinateZoomScale,
+        preferredProjection,
+        showCoordinateBadge,
+        styleVariant,
+      }) as IMSearchConfig;
+
       props.onSettingChange({
         id: props.id,
-        useMapWidgetIds: mapWidgetId ? [mapWidgetId] : [],
+        config: nextConfig,
+        useMapWidgetIds: sanitizedIds.length ? [sanitizedIds[0]] : [],
       });
     }
   );

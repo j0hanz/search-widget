@@ -114,7 +114,6 @@ export type SearchSourceConfig =
   | LayerSearchSourceConfig;
 
 export interface SearchConfig {
-  useMapWidget?: string;
   searchSources: SearchSourceConfig[];
   placeholder: string;
   maxSuggestions: number;
