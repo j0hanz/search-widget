@@ -41,7 +41,6 @@ import type {
 } from "../config/types";
 import {
   normalizeSearchConfig,
-  parseArrayField,
   parsePositiveInt,
   parsePositiveNumber,
   sanitizeNonEmptyText,
@@ -49,6 +48,8 @@ import {
   sanitizeUrlInput,
   toPlainString,
   validateSearchSource,
+  normalizeLocatorSourceConfig,
+  normalizeLayerSourceConfig,
 } from "../shared/utils";
 import StyleVariantSelector from "./component/selector";
 import defaultMessages from "./translations/default";
@@ -72,98 +73,43 @@ const normalizeSource = (source: SearchSourceConfig): EditableSearchSource => {
   };
 };
 
-const buildLocatorConfig = (
-  base: {
-    id: string;
-    name: string;
-    placeholder?: string;
-    url: string;
-    maxSuggestions?: number;
-  },
-  locatorSource: EditableSearchSource & LocatorSearchSourceConfig
-): LocatorSearchSourceConfig => {
-  const categoriesArray = parseArrayField(locatorSource.categories);
-  const outFieldsArray = parseArrayField(locatorSource.outFields);
-  const countryCode = sanitizeText(locatorSource.countryCode ?? "")
-    .replace(/[^A-Za-z]/g, "")
-    .slice(0, 3)
-    .toUpperCase();
 
-  return {
-    id: base.id,
-    name: base.name,
-    placeholder: base.placeholder,
-    url: base.url,
-    maxSuggestions: base.maxSuggestions,
-    type: SearchSourceType.Locator,
-    apiKey: sanitizeText(locatorSource.apiKey ?? "") || undefined,
-    categories: categoriesArray,
-    countryCode: countryCode || undefined,
-    locationType: sanitizeText(locatorSource.locationType ?? "") || undefined,
-    withinViewEnabled:
-      typeof locatorSource.withinViewEnabled === "boolean"
-        ? locatorSource.withinViewEnabled
-        : undefined,
-    outFields: outFieldsArray.length ? outFieldsArray : undefined,
-  };
-};
 
-const buildLayerConfig = (
-  base: {
-    id: string;
-    name: string;
-    placeholder?: string;
-    url: string;
-    maxSuggestions?: number;
-  },
-  layerSource: EditableSearchSource & LayerSearchSourceConfig
-): LayerSearchSourceConfig => {
-  const searchFieldsArray = layerSource.searchFieldsText
-    ?.split(",")
-    .map(sanitizeText)
-    .filter(Boolean);
-  const minSuggest = parsePositiveInt(
-    layerSource.minSuggestCharacters ?? MIN_SEARCH_LENGTH,
-    MIN_SEARCH_LENGTH
-  );
 
-  return {
-    id: base.id,
-    name: base.name,
-    placeholder: base.placeholder,
-    url: base.url,
-    maxSuggestions: base.maxSuggestions,
-    type: SearchSourceType.Layer,
-    layerId: sanitizeNonEmptyText(layerSource.layerId || "", ""),
-    searchFields: searchFieldsArray ?? [],
-    displayField: sanitizeText(layerSource.displayField ?? "") || undefined,
-    exactMatch: Boolean(layerSource.exactMatch),
-    minSuggestCharacters: minSuggest,
-    resultSymbol: layerSource.resultSymbol
-      ? { ...layerSource.resultSymbol }
-      : undefined,
-  };
-};
 
 const buildSourceConfig = (
   source: EditableSearchSource
 ): SearchSourceConfig => {
-  const base = {
+  const partial: Partial<SearchSourceConfig> = {
+    ...source,
     id: source.id || `${source.type}-${Date.now()}`,
-    name: sanitizeNonEmptyText(source.name, ""),
-    placeholder: sanitizeNonEmptyText(source.placeholder, ""),
-    url: sanitizeUrlInput(source.url ?? ""),
-    maxSuggestions: source.maxSuggestions,
   };
 
+  if (source.type === SearchSourceType.Layer) {
+    if (source.searchFieldsText) {
+      const fields = source.searchFieldsText
+        .split(",")
+        .map(sanitizeText)
+        .filter(Boolean);
+      (partial as Partial<LayerSearchSourceConfig>).searchFields = fields;
+    }
+  }
+
+  const placeholder = sanitizeNonEmptyText(source.placeholder, "");
+  const maxSuggestions = source.maxSuggestions ?? DEFAULT_MAX_SUGGESTIONS;
+
   return source.type === SearchSourceType.Layer
-    ? buildLayerConfig(
-        base,
-        source as EditableSearchSource & LayerSearchSourceConfig
+    ? normalizeLayerSourceConfig(
+        partial as Partial<LayerSearchSourceConfig>,
+        0,
+        placeholder,
+        maxSuggestions
       )
-    : buildLocatorConfig(
-        base,
-        source as EditableSearchSource & LocatorSearchSourceConfig
+    : normalizeLocatorSourceConfig(
+        partial as Partial<LocatorSearchSourceConfig>,
+        0,
+        placeholder,
+        maxSuggestions
       );
 };
 

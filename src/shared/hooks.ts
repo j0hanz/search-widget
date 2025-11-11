@@ -25,9 +25,13 @@ import {
   createLayerSource,
   createLocatorSource,
   detectProjection as detectSwerefProjection,
+  destroyWidget,
   formatSearchResult,
+  isExtentGeometry,
+  isGraphicsLayerDestroyed,
   isLayerSource,
   isLocatorSource,
+  isValidFeatureLayer,
   loadArcgisSearchModules,
   parseCoordinateString,
   sanitizeCoordinateInput,
@@ -36,47 +40,13 @@ import {
   validateCoordinates,
 } from "./utils";
 
-const clampToValidIndex = (index: number, arrayLength: number): number =>
-  arrayLength === 0 ? -1 : Math.min(Math.max(0, index), arrayLength - 1);
-
-const isValidFeatureLayer = (
-  layer: __esri.FeatureLayer | null | undefined
-): boolean =>
-  Boolean(
-    layer &&
-      layer.type === "feature" &&
-      layer.loadStatus !== "failed" &&
-      !(layer as Partial<__esri.FeatureLayer> & { isTable?: boolean }).isTable
-  );
-
-interface Destroyable {
-  destroy?: () => void;
-}
-
-const destroyWidget = (widget: Maybe<Destroyable>) => {
-  widget?.destroy?.();
-};
-
-const isExtentGeometry = (candidate: unknown): candidate is __esri.Extent => {
-  if (!candidate || typeof candidate !== "object") return false;
-  const shape = candidate as { type?: unknown };
-  return shape.type === "extent";
-};
-
 interface DebouncedCoordinateSearch {
   (input: string): Promise<CoordinateSearchResult>;
   cancel?: () => void;
 }
 
-const isGraphicsLayerDestroyed = (
-  layer: Maybe<__esri.GraphicsLayer>
-): boolean => {
-  if (!layer) return false;
-  const candidate = layer as Partial<__esri.GraphicsLayer> & {
-    destroyed?: boolean;
-  };
-  return Boolean(candidate.destroyed);
-};
+const clampToValidIndex = (index: number, arrayLength: number): number =>
+  arrayLength === 0 ? -1 : Math.min(Math.max(0, index), arrayLength - 1);
 
 export const useEsriSearchModules = () => {
   const [modules, setModules] = React.useState<EsriSearchModules | null>(null);

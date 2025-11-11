@@ -169,7 +169,7 @@ const createBaseSourceConfig = (
   };
 };
 
-const normalizeLocatorSourceConfig = (
+export const normalizeLocatorSourceConfig = (
   source: Partial<LocatorSearchSourceConfig> | undefined,
   index: number,
   placeholder: string,
@@ -212,7 +212,7 @@ const normalizeLocatorSourceConfig = (
   };
 };
 
-const normalizeLayerSourceConfig = (
+export const normalizeLayerSourceConfig = (
   source: Partial<LayerSearchSourceConfig> | undefined,
   index: number,
   placeholder: string,
@@ -872,6 +872,16 @@ export const isValidSpatialReference = (
   return typeof sr.wkt === "string" && sr.wkt.trim().length > 0;
 };
 
+export const isValidFeatureLayer = (
+  layer: __esri.FeatureLayer | null | undefined
+): boolean =>
+  Boolean(
+    layer &&
+      layer.type === "feature" &&
+      layer.loadStatus !== "failed" &&
+      !(layer as Partial<__esri.FeatureLayer> & { isTable?: boolean }).isTable
+  );
+
 export const isValidPointGeometry = (
   point: { x?: unknown; y?: unknown } | null | undefined
 ): boolean => {
@@ -892,6 +902,30 @@ export const isValidPointData = (
   if (!data.spatialReference || typeof data.spatialReference !== "object")
     return false;
   return isValidSpatialReference(data.spatialReference);
+};
+
+export const isExtentGeometry = (candidate: unknown): candidate is __esri.Extent => {
+  if (!candidate || typeof candidate !== "object") return false;
+  const shape = candidate as { type?: unknown };
+  return shape.type === "extent";
+};
+
+export const isGraphicsLayerDestroyed = (
+  layer: __esri.GraphicsLayer | null | undefined
+): boolean => {
+  if (!layer) return false;
+  const candidate = layer as Partial<__esri.GraphicsLayer> & {
+    destroyed?: boolean;
+  };
+  return Boolean(candidate.destroyed);
+};
+
+interface Destroyable {
+  destroy?: () => void;
+}
+
+export const destroyWidget = (widget: Destroyable | null | undefined) => {
+  widget?.destroy?.();
 };
 
 export interface CoordinateDetectionResult {
