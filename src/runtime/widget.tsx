@@ -17,6 +17,7 @@ import {
 import caretDown from "jimu-icons/svg/outlined/directional/down.svg";
 import type { Dispatch } from "redux";
 import {
+  COORDINATE_GRAPHIC_SYMBOL,
   type CoordinateResultSummary,
   type CoordinateSearchResult,
   DEFAULT_COORDINATE_PREFERENCE,
@@ -54,7 +55,10 @@ import {
 import {
   type CoordinateDetectionResult,
   isLikelyCoordinateInput,
+  isValidPointData,
+  isValidSpatialReference,
   summarizeSearchResult,
+  toMutableValue,
 } from "../shared/utils";
 import defaultMessages from "./translations/default";
 
@@ -91,21 +95,6 @@ const toCoordinateResultSummary = (
       ? (result.point.toJSON() as PointJSON)
       : null,
 });
-
-interface MutableLike<T> {
-  asMutable?: (options?: { deep?: boolean }) => T;
-}
-
-function toMutableValue<T>(value: Maybe<T | MutableLike<T>>): T | null {
-  if (value == null) {
-    return null;
-  }
-  const candidate = value as MutableLike<T>;
-  if (typeof candidate.asMutable === "function") {
-    return candidate.asMutable({ deep: true });
-  }
-  return value as T;
-}
 
 const isGraphicsLayerDestroyed = (
   layer: __esri.GraphicsLayer | null
@@ -225,12 +214,7 @@ const useSearchResultSummaries = (results: unknown): SearchResultSummary[] => {
   } | null>(null);
 
   if (!cacheRef.current || cacheRef.current.source !== results) {
-    const mutable =
-      toMutableValue<SearchResultSummary[]>(
-        results as Maybe<
-          SearchResultSummary[] | MutableLike<SearchResultSummary[]>
-        >
-      ) ?? [];
+    const mutable = toMutableValue<SearchResultSummary[]>(results) ?? [];
     cacheRef.current = {
       source: results,
       value: mutable,
@@ -243,8 +227,8 @@ const useSearchResultSummaries = (results: unknown): SearchResultSummary[] => {
 const Widget = (props: WidgetProps) => {
   const { id, useMapWidgetIds } = props;
   const translate = hooks.useTranslation(defaultMessages);
-  const cfg = useNormalizedConfig(props.config);
-  const styles = useUiStyles(cfg.styleVariant ?? DEFAULT_STYLE_VARIANT);
+  const config = useNormalizedConfig(props.config);
+  const styles = useUiStyles(config.styleVariant ?? DEFAULT_STYLE_VARIANT);
 
   const mapWidgetId = Array.isArray(useMapWidgetIds)
     ? (() => {
@@ -338,14 +322,14 @@ const Widget = (props: WidgetProps) => {
   const coordinateLayerViewRef = React.useRef<__esri.View | null>(null);
   const modulesRef = hooks.useLatest(modules);
   const mapViewRefLatest = hooks.useLatest(mapView);
-  const coordinateZoomScaleRef = hooks.useLatest(cfg.coordinateZoomScale);
+  const coordinateZoomScaleRef = hooks.useLatest(config.coordinateZoomScale);
   const isCoordinateInputRef = hooks.useLatest(widgetState.isCoordinateInput);
   const awaitingModulesRef = React.useRef(false);
   const lastCoordinateTermRef = React.useRef<string>("");
   const coordinateLayerId = `${id}-coordinate-layer`;
 
   hooks.useUpdateEffect((): void | (() => void) => {
-    const enabled = cfg.enableCoordinateSearch;
+    const enabled = config.enableCoordinateSearch;
     const view = mapView?.view;
     const currentModules = modulesRef.current;
     const existingLayerRef = coordinateLayerRef.current;
@@ -399,31 +383,29 @@ const Widget = (props: WidgetProps) => {
         coordinateLayerViewRef.current = null;
       }
     };
-  }, [cfg.enableCoordinateSearch, mapView, modules, coordinateLayerId]);
+  }, [config.enableCoordinateSearch, mapView, modules, coordinateLayerId]);
 
   const updateCoordinateGraphic = hooks.useEventCallback(
     (point: __esri.Point) => {
       const currentModules = modulesRef.current;
       const layer = coordinateLayerRef.current;
-      if (!currentModules || !layer) return;
 
+      if (!currentModules || !layer) return;
       if (isGraphicsLayerDestroyed(layer)) {
         coordinateLayerRef.current = null;
         return;
       }
 
       try {
-        if (isGraphicsLayerDestroyed(layer)) {
-          coordinateLayerRef.current = null;
-          return;
-        }
-
         layer.removeAll();
         const symbol = new currentModules.SimpleMarkerSymbol({
-          style: "x",
-          color: [32, 108, 255, 0.95],
-          size: 14,
-          outline: { color: [255, 255, 255, 0.9], width: 2 },
+          style: COORDINATE_GRAPHIC_SYMBOL.STYLE,
+          color: COORDINATE_GRAPHIC_SYMBOL.COLOR,
+          size: COORDINATE_GRAPHIC_SYMBOL.SIZE,
+          outline: {
+            color: COORDINATE_GRAPHIC_SYMBOL.OUTLINE_COLOR,
+            width: COORDINATE_GRAPHIC_SYMBOL.OUTLINE_WIDTH,
+          },
         });
         layer.add(new currentModules.Graphic({ geometry: point, symbol }));
       } catch (error) {
@@ -447,7 +429,7 @@ const Widget = (props: WidgetProps) => {
   const coordinateSearch = useCoordinateSearch({
     modules,
     mapView,
-    preference: cfg.preferredProjection,
+    preference: config.preferredProjection,
     onSuccess: (result) => {
       if (!isCoordinateInputRef.current) return;
       setCoordinateLoading(false);
@@ -459,30 +441,22 @@ const Widget = (props: WidgetProps) => {
     onError: (errorKey) => {
       if (!isCoordinateInputRef.current) return;
       if (errorKey?.startsWith("coordinateWarning")) return;
-      setCoordinateLoading(false);
-      const translated = translate(errorKey ?? "coordinateErrorGeneric");
-      const message =
-        translated && translated !== errorKey
-          ? translated
-          : translate("coordinateErrorGeneric");
 
-      // Log missing translation keys for debugging
-      if (
-        translated === errorKey &&
-        errorKey &&
-        errorKey !== "coordinateErrorGeneric"
-      ) {
+      setCoordinateLoading(false);
+      const message = translate(errorKey ?? "coordinateErrorGeneric");
+
+      if (message === errorKey && errorKey !== "coordinateErrorGeneric") {
         console.log(`Missing translation for error key: ${errorKey}`);
       }
 
-      setError(message);
+      setError(message || translate("coordinateErrorGeneric"));
       clearCoordinateResultState();
       coordinateLayerRef.current?.removeAll();
     },
   });
 
   hooks.useUpdateEffect(() => {
-    if (!cfg.enableCoordinateSearch) return;
+    if (!config.enableCoordinateSearch) return;
     const summary = coordinateResult;
     const modulesCurrent = modulesRef.current;
     if (
@@ -503,38 +477,14 @@ const Widget = (props: WidgetProps) => {
     try {
       const pointData = summary.mapPoint;
 
-      // Validate point coordinates
-      if (
-        typeof pointData.x !== "number" ||
-        typeof pointData.y !== "number" ||
-        !Number.isFinite(pointData.x) ||
-        !Number.isFinite(pointData.y)
-      ) {
+      if (!isValidPointData(pointData)) {
         console.log("Search widget: invalid stored coordinate data");
         layer.removeAll();
         return;
       }
 
-      // Validate spatial reference exists
-      if (
-        !pointData.spatialReference ||
-        typeof pointData.spatialReference !== "object"
-      ) {
-        console.log(
-          "Search widget: missing spatial reference in stored coordinate"
-        );
-        layer.removeAll();
-        return;
-      }
-
-      // Validate spatial reference has exactly one of wkid or wkt
       const sr = pointData.spatialReference;
-      const hasValidWkid =
-        typeof sr.wkid === "number" && Number.isFinite(sr.wkid) && sr.wkid > 0;
-      const hasValidWkt =
-        typeof sr.wkt === "string" && sr.wkt.trim().length > 0;
-
-      if (!hasValidWkid && !hasValidWkt) {
+      if (!isValidSpatialReference(sr)) {
         console.log(
           "Search widget: invalid spatial reference in stored coordinate"
         );
@@ -542,25 +492,17 @@ const Widget = (props: WidgetProps) => {
         return;
       }
 
-      // Construct spatial reference first to validate before Point creation
       const spatialReference = new modulesCurrent.SpatialReference(
-        hasValidWkid ? { wkid: sr.wkid } : { wkt: sr.wkt }
+        typeof sr.wkid === "number" ? { wkid: sr.wkid } : { wkt: sr.wkt }
       );
 
-      // Create point with validated data
       const point = new modulesCurrent.Point({
         x: pointData.x,
         y: pointData.y,
         spatialReference,
       });
 
-      if (
-        !point ||
-        typeof point.x !== "number" ||
-        typeof point.y !== "number" ||
-        !Number.isFinite(point.x) ||
-        !Number.isFinite(point.y)
-      ) {
+      if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
         console.log(
           "Search widget: failed to construct valid Point from stored data"
         );
@@ -581,7 +523,7 @@ const Widget = (props: WidgetProps) => {
       }
     }
   }, [
-    cfg.enableCoordinateSearch,
+    config.enableCoordinateSearch,
     coordinateResult,
     modulesRef,
     updateCoordinateGraphic,
@@ -621,7 +563,7 @@ const Widget = (props: WidgetProps) => {
     const normalized = term ?? "";
     setLastSearchTerm(normalized);
 
-    if (!cfg.enableCoordinateSearch) {
+    if (!config.enableCoordinateSearch) {
       setDetectionResult(null);
       if (isCoordinateInputRef.current) {
         setCoordinateInputFlag(false);
@@ -666,7 +608,7 @@ const Widget = (props: WidgetProps) => {
 
   hooks.useUpdateEffect(() => {
     if (
-      !cfg.enableCoordinateSearch ||
+      !config.enableCoordinateSearch ||
       !widgetState.isCoordinateInput ||
       !modules ||
       !awaitingModulesRef.current
@@ -683,7 +625,7 @@ const Widget = (props: WidgetProps) => {
     triggerCoordinateSearch(term);
   }, [
     modules,
-    cfg.enableCoordinateSearch,
+    config.enableCoordinateSearch,
     widgetState.isCoordinateInput,
     triggerCoordinateSearch,
   ]);
@@ -692,10 +634,10 @@ const Widget = (props: WidgetProps) => {
     mapView,
     container: containerEl,
     modules,
-    config: cfg,
+    config,
     activeSourceIndex: widgetState.activeSourceIndex,
     lastSearchTerm: widgetState.lastSearchTerm,
-    zoomScale: cfg.zoomScale,
+    zoomScale: config.zoomScale,
     onInputChange: handleInputChange,
     onSearchStart: (term) => {
       if (isCoordinateInputRef.current) {
@@ -735,7 +677,7 @@ const Widget = (props: WidgetProps) => {
   });
 
   const { activeSource, hasMultiple, changeHandler } = useSearchSourceSelector({
-    sources: cfg.searchSources,
+    sources: config.searchSources,
     activeIndex: widgetState.activeSourceIndex,
     onChange: (index) => {
       setActiveSource(index);
@@ -747,7 +689,7 @@ const Widget = (props: WidgetProps) => {
   });
 
   const isCoordinateActive =
-    cfg.enableCoordinateSearch && widgetState.isCoordinateInput;
+    config.enableCoordinateSearch && widgetState.isCoordinateInput;
 
   const showLoading =
     !modules ||
@@ -759,14 +701,16 @@ const Widget = (props: WidgetProps) => {
       maximumFractionDigits: 2,
     }).format(value);
 
-  const getProjectionLabel = (projection: Sweref99Projection | null) => {
+  const getProjectionDisplayLabel = (
+    projection: Sweref99Projection | null
+  ): string => {
     if (!projection) return translate("coordinateErrorNoProjection");
     const key = `crs_${projection.id.replace(/-/g, "_")}`;
     const label = translate(key);
     return label !== key ? label : projection.name;
   };
 
-  const renderCoordinateValue = (labelKey: string, value: number) => (
+  const renderCoordinateLabeledValue = (labelKey: string, value: number) => (
     <div>
       <Label css={styles.coordinateLabel}>{translate(labelKey)}</Label>
       <Typography css={styles.coordinateValue}>
@@ -777,8 +721,8 @@ const Widget = (props: WidgetProps) => {
 
   const renderCoordinateBadge = () => {
     if (
-      !cfg.enableCoordinateSearch ||
-      !cfg.showCoordinateBadge ||
+      !config.enableCoordinateSearch ||
+      !config.showCoordinateBadge ||
       !widgetState.isCoordinateInput ||
       !coordinateResult?.projectionId
     ) {
@@ -786,7 +730,7 @@ const Widget = (props: WidgetProps) => {
     }
 
     const projection = resolveProjection(coordinateResult.projectionId);
-    const projectionLabel = getProjectionLabel(projection);
+    const projectionLabel = getProjectionDisplayLabel(projection);
 
     return (
       <div
@@ -808,7 +752,7 @@ const Widget = (props: WidgetProps) => {
   const renderCoordinateDetails = () => {
     if (!coordinateResult) return null;
     const projection = resolveProjection(coordinateResult.projectionId);
-    const projectionLabel = getProjectionLabel(projection);
+    const projectionLabel = getProjectionDisplayLabel(projection);
     return (
       <div css={styles.coordinateDetails} role="group">
         <div>
@@ -817,8 +761,14 @@ const Widget = (props: WidgetProps) => {
             {projectionLabel}
           </Typography>
         </div>
-        {renderCoordinateValue("coordinateEasting", coordinateResult.easting)}
-        {renderCoordinateValue("coordinateNorthing", coordinateResult.northing)}
+        {renderCoordinateLabeledValue(
+          "coordinateEasting",
+          coordinateResult.easting
+        )}
+        {renderCoordinateLabeledValue(
+          "coordinateNorthing",
+          coordinateResult.northing
+        )}
         {coordinateResult.warnings?.map((warning, i) => (
           <div
             key={`${warning}-${i}`}
@@ -925,7 +875,7 @@ const Widget = (props: WidgetProps) => {
             <Typography>
               {translate("resultFromSource", {
                 source:
-                  cfg.searchSources[result.sourceIndex]?.name ??
+                  config.searchSources[result.sourceIndex]?.name ??
                   activeSource?.name ??
                   "",
               })}
@@ -961,7 +911,7 @@ const Widget = (props: WidgetProps) => {
                   <SVG src={caretDown} />
                 </DropdownButton>
                 <DropdownMenu role="menu">
-                  {cfg.searchSources.map((source, index) => (
+                  {config.searchSources.map((source, index) => (
                     <DropdownItem
                       key={source.id ?? `source-${index}`}
                       active={index === widgetState.activeSourceIndex}

@@ -84,6 +84,19 @@ export const GLOBAL_NORTHING_MAX = 7_800_000;
 
 export const PROJECTION_LOAD_TIMEOUT_MS = 5_000;
 
+export const COORDINATE_GRAPHIC_SYMBOL = {
+  STYLE: "x" as const,
+  COLOR: [32, 108, 255, 0.95] as [number, number, number, number],
+  SIZE: 14,
+  OUTLINE_COLOR: [255, 255, 255, 0.9] as [number, number, number, number],
+  OUTLINE_WIDTH: 2,
+};
+
+export const MAP_NAVIGATION = {
+  EXTENT_EXPAND_RATIO: 1.2,
+  ANIMATION_DURATION_MS: 800,
+} as const;
+
 const ZONE_SPECS: ZoneSpec[] = [
   { zoneId: "12 00", name: "SWEREF 99 12 00", epsg: 3007, centralMeridian: 12 },
   {

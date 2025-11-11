@@ -53,6 +53,77 @@ import type {
   ValidateCoordinatesParams,
 } from "../config/types";
 
+interface MutableLike<T> {
+  asMutable?: (options?: { deep?: boolean }) => T;
+}
+
+export const toMutableValue = <T>(
+  value: T | MutableLike<T> | null | undefined
+): T | null => {
+  if (value == null) {
+    return null;
+  }
+  const candidate = value as MutableLike<T>;
+  if (typeof candidate.asMutable === "function") {
+    return candidate.asMutable({ deep: true });
+  }
+  return value as T;
+};
+
+export const sanitizeText = (value: string): string =>
+  value
+    ?.toString?.()
+    .replace(/[\r\n]+/g, " ")
+    .trim() ?? "";
+
+export const sanitizeNonEmptyText = (
+  value: string,
+  fallback: string
+): string => {
+  const sanitized = sanitizeText(value);
+  return sanitized || fallback;
+};
+
+export const toPlainString = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "";
+};
+
+export const parseArrayField = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map(sanitizeText).filter(Boolean);
+};
+
+export const sanitizeUrlInput = (value: string): string => {
+  const trimmed = sanitizeText(value);
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+};
+
+export const parsePositiveInt = (
+  value: number | string,
+  fallback: number
+): number => {
+  const num = typeof value === "number" ? value : parseInt(value, 10);
+  return Number.isFinite(num) && num > 0 ? Math.round(num) : fallback;
+};
+
+export const parsePositiveNumber = (
+  value: number | string,
+  fallback: number
+): number => {
+  const num = typeof value === "number" ? value : parseFloat(value);
+  return Number.isFinite(num) && num > 0 ? num : fallback;
+};
+
 const toPointGeometry = (
   geometry?: __esri.Geometry | null
 ): __esri.Point | null =>
@@ -352,49 +423,36 @@ const normalizeNumericString = (raw: string): string => {
 
   const dotCount = (cleaned.match(/\./g) ?? []).length;
   const commaCount = (cleaned.match(/,/g) ?? []).length;
-  if (dotCount + commaCount > 2) return "";
+  const totalSeparators = dotCount + commaCount;
 
-  if (commaCount === 1 && dotCount === 0) {
-    const parts = cleaned.split(",");
-    return applySign(buildDecimal(parts[0], parts[1]));
-  }
-  if (commaCount === 1 && dotCount >= 1) {
-    const commaIndex = cleaned.lastIndexOf(",");
-    const beforeComma = cleaned.slice(0, commaIndex).replace(/\./g, "");
-    const afterComma = cleaned.slice(commaIndex + 1);
-    return applySign(buildDecimal(beforeComma, afterComma));
-  }
-  if (dotCount === 1 && commaCount >= 1) {
-    const normalized = cleaned.replace(/,/g, "");
-    const parts = normalized.split(".");
+  if (totalSeparators > 2) return "";
+  if (totalSeparators === 0) return applySign(cleaned);
+
+  // Single separator cases - unambiguous decimal point
+  if (totalSeparators === 1) {
+    const parts = cleaned.split(/[,.]/);
     return applySign(buildDecimal(parts[0], parts[1]));
   }
 
+  // Multiple separators - detect thousands vs decimal
   if (dotCount > 1 && commaCount === 0) {
     return applySign(cleaned.replace(/\./g, ""));
   }
   if (commaCount > 1 && dotCount === 0) {
     return applySign(cleaned.replace(/,/g, ""));
   }
-  const lastDot = cleaned.lastIndexOf(".");
-  const lastComma = cleaned.lastIndexOf(",");
-  const decimalIndex = Math.max(lastComma, lastDot);
 
-  if (decimalIndex === -1) {
-    return applySign(cleaned.replace(/[,.-]/g, ""));
+  // Mixed separators - last one is decimal point
+  if (commaCount >= 1 && dotCount >= 1) {
+    const lastCommaIdx = cleaned.lastIndexOf(",");
+    const lastDotIdx = cleaned.lastIndexOf(".");
+    const decimalIdx = Math.max(lastCommaIdx, lastDotIdx);
+    const before = cleaned.slice(0, decimalIdx).replace(/[,.]/g, "");
+    const after = cleaned.slice(decimalIdx + 1);
+    return applySign(buildDecimal(before, after));
   }
 
-  const beforeSeparator = cleaned.slice(0, decimalIndex);
-  const afterSeparator = cleaned.slice(decimalIndex + 1);
-  const charsAfterSeparator = afterSeparator.length;
-  const hasSeparatorsBefore = /[,.-]/.test(beforeSeparator);
-  if (charsAfterSeparator >= 1 && charsAfterSeparator <= 6) {
-    if (hasSeparatorsBefore && charsAfterSeparator === 3) {
-      return applySign(cleaned.replace(/[,.-]/g, ""));
-    }
-    return applySign(buildDecimal(beforeSeparator, afterSeparator));
-  }
-  return applySign(cleaned.replace(/[,.-]/g, ""));
+  return applySign(cleaned);
 };
 
 const parseNumeric = (raw: string): number | null => {
@@ -617,6 +675,40 @@ export const isLikelyWgs84Coordinate = (
   second: number
 ): boolean => isLikelyWgs84(first, second);
 
+export const isValidSpatialReference = (
+  sr: __esri.SpatialReferenceProperties | null | undefined
+): boolean => {
+  if (!sr || typeof sr !== "object") return false;
+  const hasValidWkid =
+    typeof sr.wkid === "number" && Number.isFinite(sr.wkid) && sr.wkid > 0;
+  const hasValidWkt = typeof sr.wkt === "string" && sr.wkt.trim().length > 0;
+  return hasValidWkid || hasValidWkt;
+};
+
+export const isValidPointGeometry = (
+  point: { x?: unknown; y?: unknown } | null | undefined
+): boolean => {
+  if (!point || typeof point !== "object") return false;
+  return (
+    typeof point.x === "number" &&
+    typeof point.y === "number" &&
+    Number.isFinite(point.x) &&
+    Number.isFinite(point.y)
+  );
+};
+
+export const isValidPointData = (
+  data: PointJSON | null | undefined
+): boolean => {
+  if (!data) return false;
+  return (
+    isValidPointGeometry(data) &&
+    data.spatialReference != null &&
+    typeof data.spatialReference === "object" &&
+    isValidSpatialReference(data.spatialReference)
+  );
+};
+
 export interface CoordinateDetectionResult {
   isCoordinate: boolean;
   confidence: "high" | "medium" | "low";
@@ -722,18 +814,18 @@ export const detectPreferredProjection = (
   DEFAULT_COORDINATE_PREFERENCE ??
   CoordinateProjectionPreference.Auto;
 
-const isWithin = (value: number, min: number, max: number) =>
+const isInRange = (value: number, min: number, max: number): boolean =>
   value >= min && value <= max;
 
 const isWithinBounds = (
   value: number,
   bounds: { eMin: number; eMax: number; nMin: number; nMax: number },
   axis: "e" | "n"
-) => {
+): boolean => {
   const { eMin, eMax, nMin, nMax } = bounds;
   return axis === "e"
-    ? isWithin(value, eMin, eMax)
-    : isWithin(value, nMin, nMax);
+    ? isInRange(value, eMin, eMax)
+    : isInRange(value, nMin, nMax);
 };
 
 const findMatchingZones = (
@@ -831,8 +923,8 @@ export const detectProjection = (
     CoordinateProjectionPreference.Auto;
   const mapLon = getLonFromPoint(params.mapCenter);
 
-  const tmLikely = isWithin(easting, TM_EASTING_MIN, TM_EASTING_MAX);
-  const zoneLikely = isWithin(easting, ZONE_EASTING_MIN, ZONE_EASTING_MAX);
+  const tmLikely = isInRange(easting, TM_EASTING_MIN, TM_EASTING_MAX);
+  const zoneLikely = isInRange(easting, ZONE_EASTING_MIN, ZONE_EASTING_MAX);
 
   const zoneCandidates = zoneLikely ? findMatchingZones(easting, northing) : [];
 
@@ -873,21 +965,19 @@ export const detectProjection = (
 };
 
 export const isSweref99Range = (easting: number, northing: number): boolean =>
-  easting >= GLOBAL_EASTING_MIN &&
-  easting <= GLOBAL_EASTING_MAX &&
-  northing >= GLOBAL_NORTHING_MIN &&
-  northing <= GLOBAL_NORTHING_MAX;
+  isInRange(easting, GLOBAL_EASTING_MIN, GLOBAL_EASTING_MAX) &&
+  isInRange(northing, GLOBAL_NORTHING_MIN, GLOBAL_NORTHING_MAX);
 
 const withinProjectionBounds = (
   easting: number,
   northing: number,
   projection?: Sweref99Projection | null
-) => {
+): boolean => {
   if (!projection) return isSweref99Range(easting, northing);
   const { bounds } = projection;
   return (
-    isWithin(easting, bounds.eMin, bounds.eMax) &&
-    isWithin(northing, bounds.nMin, bounds.nMax)
+    isInRange(easting, bounds.eMin, bounds.eMax) &&
+    isInRange(northing, bounds.nMin, bounds.nMax)
   );
 };
 

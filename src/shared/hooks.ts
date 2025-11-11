@@ -7,6 +7,7 @@ import type {
   CoordinateSearchResult,
   CoordinateTransformOptions,
   EsriSearchModules,
+  LayerSearchSourceConfig,
   Maybe,
   ProjectionDetectionResult,
   ProjectionDetectorOptions,
@@ -32,21 +33,31 @@ import {
   validateCoordinates,
 } from "./utils";
 
-const clampArrayIndex = (index: number, arrayLength: number): number => {
+const clampToValidIndex = (index: number, arrayLength: number): number => {
   if (arrayLength === 0) return -1;
   return Math.max(0, Math.min(index, arrayLength - 1));
+};
+
+const isValidFeatureLayer = (
+  layer: __esri.FeatureLayer | null | undefined
+): boolean => {
+  if (!layer) return false;
+  const candidate = layer as Partial<__esri.FeatureLayer> & {
+    isTable?: boolean;
+  };
+  return (
+    !candidate.isTable &&
+    layer.type === "feature" &&
+    layer.loadStatus !== "failed"
+  );
 };
 
 interface Destroyable {
   destroy?: () => void;
 }
 
-const isFeatureLayerTable = (layer: __esri.FeatureLayer | null | undefined) => {
-  if (!layer) return false;
-  const candidate = layer as Partial<__esri.FeatureLayer> & {
-    isTable?: boolean;
-  };
-  return Boolean(candidate.isTable);
+const destroyWidget = (widget: Maybe<Destroyable>) => {
+  widget?.destroy?.();
 };
 
 const isExtentGeometry = (candidate: unknown): candidate is __esri.Extent => {
@@ -76,31 +87,75 @@ export const useEsriSearchModules = () => {
   return { modules, error };
 };
 
-const destroyWidget = (widget: Maybe<Destroyable>) => {
-  widget?.destroy?.();
-};
-
 const MIN_SCALE = 1;
 const MAX_SCALE = 1_000_000_000;
 const LAYER_LOAD_TIMEOUT_MS = 10_000;
 
-type SearchStartEvent = { searchTerm?: string | null } | null | undefined;
-type SearchCompleteGroup =
-  | {
-      sourceIndex?: number;
-      results?: __esri.SearchResult[] | null;
-    }
-  | null
-  | undefined;
-type SearchCompleteEvent =
-  | { results?: SearchCompleteGroup[] | null }
-  | null
-  | undefined;
-type SearchSelectEvent =
-  | { result?: (__esri.SearchResult & { sourceIndex?: number }) | null }
-  | null
-  | undefined;
-type SearchErrorEvent = { error?: unknown } | null | undefined;
+interface SearchStartEventData {
+  searchTerm?: string | null;
+}
+
+interface SearchCompleteGroupData {
+  sourceIndex?: number;
+  results?: __esri.SearchResult[] | null;
+}
+
+interface SearchCompleteEventData {
+  results?: SearchCompleteGroupData[] | null;
+}
+
+interface SearchSelectEventData {
+  result?: (__esri.SearchResult & { sourceIndex?: number }) | null;
+}
+
+interface SearchErrorEventData {
+  error?: unknown;
+}
+
+type SearchStartEvent = SearchStartEventData | null | undefined;
+type SearchCompleteEvent = SearchCompleteEventData | null | undefined;
+type SearchSelectEvent = SearchSelectEventData | null | undefined;
+type SearchErrorEvent = SearchErrorEventData | null | undefined;
+
+const loadFeatureLayer = async (
+  layer: __esri.FeatureLayer
+): Promise<boolean> => {
+  if (!layer?.when) return false;
+
+  try {
+    await Promise.race([
+      layer.when(),
+      new Promise((_resolve, reject) => {
+        setTimeout(() => {
+          reject(new Error("Layer load timeout"));
+        }, LAYER_LOAD_TIMEOUT_MS);
+      }),
+    ]);
+    return isValidFeatureLayer(layer);
+  } catch {
+    return false;
+  }
+};
+
+const createFeatureLayerFromConfig = (
+  modules: EsriSearchModules,
+  source: LayerSearchSourceConfig
+): __esri.FeatureLayer | null => {
+  try {
+    return new modules.FeatureLayer({
+      id: source.layerId || undefined,
+      url: source.url,
+      outFields: ["*"],
+    });
+  } catch (error) {
+    console.log(
+      "Search widget: failed to instantiate FeatureLayer",
+      source.layerId || source.url,
+      error
+    );
+    return null;
+  }
+};
 
 const buildSources = async (params: {
   configSources: SearchSourceConfig[];
@@ -109,76 +164,50 @@ const buildSources = async (params: {
 }): Promise<__esri.SearchSource[]> => {
   const { configSources, modules, mapView } = params;
   if (!configSources?.length) return [];
+
   const list: __esri.SearchSource[] = [];
   const view = mapView?.view;
+
   for (const source of configSources) {
     if (isLocatorSource(source)) {
       list.push(createLocatorSource(modules, source));
-    } else if (isLayerSource(source)) {
-      let layer = view?.map?.findLayerById(source.layerId) as
-        | __esri.FeatureLayer
-        | undefined;
+      continue;
+    }
 
-      if (!layer) {
-        try {
-          layer = new modules.FeatureLayer({
-            id: source.layerId || undefined,
-            url: source.url,
-            outFields: ["*"],
-          });
-        } catch (error) {
-          console.log(
-            "Search widget: failed to instantiate FeatureLayer",
-            source.layerId || source.url,
-            error
-          );
-          continue;
-        }
-      }
+    if (!isLayerSource(source)) continue;
 
-      if (layer?.when) {
-        try {
-          await Promise.race([
-            layer.when(),
-            new Promise((_resolve, reject) => {
-              setTimeout(() => {
-                reject(new Error("Layer load timeout"));
-              }, LAYER_LOAD_TIMEOUT_MS);
-            }),
-          ]);
-        } catch (error) {
-          console.log(
-            "Search widget: failed to load layer",
-            source.layerId || source.url,
-            error
-          );
-          continue;
-        }
-      }
+    // Try to find existing layer first
+    let layer = view?.map?.findLayerById(source.layerId) as
+      | __esri.FeatureLayer
+      | undefined;
 
-      // Verify layer loaded successfully and is usable
-      if (!layer || layer.loadStatus === "failed") {
-        console.log(
-          "Search widget: layer failed to load",
-          source.layerId || source.url
-        );
-        continue;
-      }
+    // Create new layer if not found
+    if (!layer) {
+      layer = createFeatureLayerFromConfig(modules, source);
+      if (!layer) continue;
+    }
 
-      if (isFeatureLayerTable(layer) || layer?.type !== "feature") continue;
+    // Ensure layer is loaded and valid
+    const isLoaded = await loadFeatureLayer(layer);
+    if (!isLoaded) {
+      console.log(
+        "Search widget: layer failed to load or invalid",
+        source.layerId || source.url
+      );
+      continue;
+    }
 
-      try {
-        list.push(createLayerSource(modules, layer, source));
-      } catch (error) {
-        console.log(
-          "Search widget: failed to create layer source",
-          source.layerId || source.url,
-          error
-        );
-        continue;
-      }
+    try {
+      list.push(createLayerSource(modules, layer, source));
+    } catch (error) {
+      console.log(
+        "Search widget: failed to create layer source",
+        source.layerId || source.url,
+        error
+      );
     }
   }
+
   return list;
 };
 
@@ -246,7 +275,7 @@ export const useSearchWidget = (
           () => viewModel.activeSourceIndex,
           (index: number) => {
             const sourcesLength = searchWidget.sources?.length ?? 0;
-            const normalized = clampArrayIndex(
+            const normalized = clampToValidIndex(
               typeof index === "number" ? index : 0,
               sourcesLength
             );
@@ -255,7 +284,7 @@ export const useSearchWidget = (
 
             if (normalized === lastActiveSourceBroadcastRef.current) return;
 
-            const currentFromState = clampArrayIndex(
+            const currentFromState = clampToValidIndex(
               activeIndexRef.current ?? 0,
               sourcesLength
             );
@@ -365,7 +394,7 @@ export const useSearchWidget = (
       // Handle empty sources array safely - only set activeSourceIndex if we have sources
       const clampedIndex =
         sources.length > 0
-          ? clampArrayIndex(activeIndexRef.current ?? 0, sources.length)
+          ? clampToValidIndex(activeIndexRef.current ?? 0, sources.length)
           : -1;
 
       const widgetConfig: { [key: string]: unknown } = {
@@ -503,7 +532,7 @@ export const useSearchWidget = (
   hooks.useUpdateEffect(() => {
     if (widgetRef.current) {
       const sourcesLength = widgetRef.current.sources?.length ?? 0;
-      const clampedIndex = clampArrayIndex(activeSourceIndex, sourcesLength);
+      const clampedIndex = clampToValidIndex(activeSourceIndex, sourcesLength);
       widgetRef.current.activeSourceIndex = Math.max(0, clampedIndex);
     }
     lastActiveSourceBroadcastRef.current = activeSourceIndex;

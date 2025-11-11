@@ -39,23 +39,18 @@ import type {
   SearchSourceConfig,
   SettingProps,
 } from "../config/types";
-import { validateSearchSource } from "../shared/utils";
+import {
+  parseArrayField,
+  parsePositiveInt,
+  parsePositiveNumber,
+  sanitizeNonEmptyText,
+  sanitizeText,
+  sanitizeUrlInput,
+  toPlainString,
+  validateSearchSource,
+} from "../shared/utils";
 import StyleVariantSelector from "./component/selector";
 import defaultMessages from "./translations/default";
-
-const sanitizeText = (value: string): string =>
-  value
-    ?.toString?.()
-    .replace(/[\r\n]+/g, " ")
-    .trim() ?? "";
-
-const toPlainString = (value: unknown): string => {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return "";
-};
 
 const normalizeSource = (source: SearchSourceConfig): EditableSearchSource => {
   if (source.type === SearchSourceType.Layer) {
@@ -99,37 +94,13 @@ const toSearchConfig = (config: IMSearchConfig | undefined): SearchConfig => {
   };
 };
 
-const sanitizeUrlInput = (value: string): string => {
-  const trimmed = sanitizeText(value);
-  if (!trimmed) return "";
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.toString();
-  } catch {
-    return "";
-  }
-};
-
-const parsePositiveInt = (value: number | string, fallback: number): number => {
-  const num = typeof value === "number" ? value : parseInt(value, 10);
-  return Number.isFinite(num) && num > 0 ? Math.round(num) : fallback;
-};
-
-const parsePositiveNumber = (
-  value: number | string,
-  fallback: number
-): number => {
-  const num = typeof value === "number" ? value : parseFloat(value);
-  return Number.isFinite(num) && num > 0 ? num : fallback;
-};
-
 const buildSourceConfig = (
   source: EditableSearchSource
 ): SearchSourceConfig => {
   const base = {
     id: source.id || `${source.type}-${Date.now()}`,
-    name: sanitizeText(source.name),
-    placeholder: sanitizeText(source.placeholder),
+    name: sanitizeNonEmptyText(source.name, ""),
+    placeholder: sanitizeNonEmptyText(source.placeholder, ""),
     url: sanitizeUrlInput(source.url ?? ""),
     maxSuggestions: source.maxSuggestions,
   };
@@ -149,7 +120,7 @@ const buildSourceConfig = (
     return {
       ...base,
       type: SearchSourceType.Layer,
-      layerId: sanitizeText(layerSource.layerId || ""),
+      layerId: sanitizeNonEmptyText(layerSource.layerId || "", ""),
       searchFields: searchFieldsArray ?? [],
       displayField: sanitizeText(layerSource.displayField ?? "") || undefined,
       exactMatch: Boolean(layerSource.exactMatch),
@@ -162,12 +133,8 @@ const buildSourceConfig = (
 
   const locatorSource = source as EditableSearchSource &
     LocatorSearchSourceConfig;
-  const categoriesArray = Array.isArray(locatorSource.categories)
-    ? locatorSource.categories.map(sanitizeText).filter(Boolean)
-    : [];
-  const outFieldsArray = Array.isArray(locatorSource.outFields)
-    ? locatorSource.outFields.map(sanitizeText).filter(Boolean)
-    : [];
+  const categoriesArray = parseArrayField(locatorSource.categories);
+  const outFieldsArray = parseArrayField(locatorSource.outFields);
   const countryCode = sanitizeText(locatorSource.countryCode ?? "")
     .replace(/[^A-Za-z]/g, "")
     .slice(0, 3)
@@ -198,55 +165,55 @@ const computeSourceErrors = (sources: EditableSearchSource[]) =>
 const Setting = (props: SettingProps) => {
   const styles = useSettingStyles();
   const translate = hooks.useTranslation(defaultMessages);
-  const cfg = toSearchConfig(props.config);
+  const config = toSearchConfig(props.config);
 
   const [localSources, setLocalSources] = React.useState<
     EditableSearchSource[]
-  >(cfg.searchSources);
-  const [placeholder, setPlaceholder] = React.useState(cfg.placeholder);
+  >(config.searchSources);
+  const [placeholder, setPlaceholder] = React.useState(config.placeholder);
   const [maxSuggestions, setMaxSuggestions] = React.useState(
-    cfg.maxSuggestions
+    config.maxSuggestions
   );
-  const [zoomScale, setZoomScale] = React.useState(cfg.zoomScale);
+  const [zoomScale, setZoomScale] = React.useState(config.zoomScale);
   const [persistLastSearch, setPersistLastSearch] = React.useState(
-    cfg.persistLastSearch
+    config.persistLastSearch
   );
   const [enableCoordinateSearch, setEnableCoordinateSearch] = React.useState(
-    cfg.enableCoordinateSearch ?? true
+    config.enableCoordinateSearch ?? true
   );
   const [coordinateZoomScale, setCoordinateZoomScale] = React.useState(
-    cfg.coordinateZoomScale ?? DEFAULT_COORDINATE_ZOOM_SCALE
+    config.coordinateZoomScale ?? DEFAULT_COORDINATE_ZOOM_SCALE
   );
   const [preferredProjection, setPreferredProjection] = React.useState(
-    cfg.preferredProjection ?? DEFAULT_COORDINATE_PREFERENCE
+    config.preferredProjection ?? DEFAULT_COORDINATE_PREFERENCE
   );
   const [showCoordinateBadge, setShowCoordinateBadge] = React.useState(
-    cfg.showCoordinateBadge ?? true
+    config.showCoordinateBadge ?? true
   );
   const [styleVariant, setStyleVariant] = React.useState(
-    cfg.styleVariant ?? DEFAULT_STYLE_VARIANT
+    config.styleVariant ?? DEFAULT_STYLE_VARIANT
   );
   const [sourceErrors, setSourceErrors] = React.useState<string[][]>(() =>
-    computeSourceErrors(cfg.searchSources)
+    computeSourceErrors(config.searchSources)
   );
   const sourceIdCounterRef = React.useRef(0);
 
   hooks.useUpdateEffect(() => {
-    setLocalSources(cfg.searchSources);
-    setPlaceholder(cfg.placeholder);
-    setMaxSuggestions(cfg.maxSuggestions);
-    setZoomScale(cfg.zoomScale);
-    setPersistLastSearch(cfg.persistLastSearch);
-    setEnableCoordinateSearch(cfg.enableCoordinateSearch ?? true);
+    setLocalSources(config.searchSources);
+    setPlaceholder(config.placeholder);
+    setMaxSuggestions(config.maxSuggestions);
+    setZoomScale(config.zoomScale);
+    setPersistLastSearch(config.persistLastSearch);
+    setEnableCoordinateSearch(config.enableCoordinateSearch ?? true);
     setCoordinateZoomScale(
-      cfg.coordinateZoomScale ?? DEFAULT_COORDINATE_ZOOM_SCALE
+      config.coordinateZoomScale ?? DEFAULT_COORDINATE_ZOOM_SCALE
     );
     setPreferredProjection(
-      cfg.preferredProjection ?? DEFAULT_COORDINATE_PREFERENCE
+      config.preferredProjection ?? DEFAULT_COORDINATE_PREFERENCE
     );
-    setShowCoordinateBadge(cfg.showCoordinateBadge ?? true);
-    setStyleVariant(cfg.styleVariant ?? DEFAULT_STYLE_VARIANT);
-    setSourceErrors(computeSourceErrors(cfg.searchSources));
+    setShowCoordinateBadge(config.showCoordinateBadge ?? true);
+    setStyleVariant(config.styleVariant ?? DEFAULT_STYLE_VARIANT);
+    setSourceErrors(computeSourceErrors(config.searchSources));
   }, [props.config]);
 
   const commitConfig = hooks.useEventCallback(
@@ -255,7 +222,7 @@ const Setting = (props: SettingProps) => {
       sourcesOverride?: EditableSearchSource[]
     ) => {
       const merged: SearchConfig = {
-        ...cfg,
+        ...config,
         ...partial,
         searchSources: toConfigSources(sourcesOverride ?? localSources),
       };
@@ -406,7 +373,7 @@ const Setting = (props: SettingProps) => {
   });
 
   const handlePlaceholderChange = hooks.useEventCallback((value: string) => {
-    const sanitized = sanitizeText(value) || DEFAULT_PLACEHOLDER;
+    const sanitized = sanitizeNonEmptyText(value, DEFAULT_PLACEHOLDER);
     setPlaceholder(sanitized);
     commitConfig({ placeholder: sanitized });
   });
