@@ -3,6 +3,12 @@ import {
   COORDINATE_INPUT_MAX_LENGTH,
   COORDINATE_WARNING_BUFFER_METERS,
   DEFAULT_COORDINATE_PREFERENCE,
+  DEFAULT_COORDINATE_ZOOM_SCALE,
+  DEFAULT_LOCATOR_SOURCE,
+  DEFAULT_MAX_SUGGESTIONS,
+  DEFAULT_PLACEHOLDER,
+  DEFAULT_STYLE_VARIANT,
+  DEFAULT_ZOOM_SCALE,
   ESRI_SEARCH_MODULES,
   GLOBAL_EASTING_MAX,
   GLOBAL_EASTING_MIN,
@@ -39,10 +45,12 @@ import type {
   DetectProjectionParams,
   EsriSearchModules,
   ExtentJSON,
+  IMSearchConfig,
   LayerSearchSourceConfig,
   LocatorSearchSourceConfig,
   PointJSON,
   ProjectionDetectionResult,
+  SearchConfig,
   SearchResult,
   SearchResultSummary,
   SearchSourceConfig,
@@ -128,6 +136,193 @@ export const parsePositiveNumber = (
 ): number => {
   const num = toNumber(value);
   return isFiniteNumber(num) && num > 0 ? num : fallback;
+};
+
+const createBaseSourceConfig = (
+  source: Partial<SearchSourceConfig> | undefined,
+  index: number,
+  placeholder: string,
+  maxSuggestions: number
+) => {
+  const fallbackId = `search-source-${index}`;
+  const fallbackName = `Source ${index + 1}`;
+
+  const id = sanitizeNonEmptyText(toPlainString(source?.id ?? ""), fallbackId);
+  const name = sanitizeNonEmptyText(
+    toPlainString(source?.name ?? ""),
+    fallbackName
+  );
+  const resolvedPlaceholder = sanitizeNonEmptyText(
+    toPlainString(source?.placeholder ?? ""),
+    placeholder
+  );
+  const suggestionCount =
+    typeof source?.maxSuggestions === "number"
+      ? parsePositiveInt(source.maxSuggestions, maxSuggestions)
+      : maxSuggestions;
+
+  return {
+    id,
+    name,
+    placeholder: resolvedPlaceholder,
+    maxSuggestions: suggestionCount,
+  };
+};
+
+const normalizeLocatorSourceConfig = (
+  source: Partial<LocatorSearchSourceConfig> | undefined,
+  index: number,
+  placeholder: string,
+  maxSuggestions: number
+): LocatorSearchSourceConfig => {
+  const base = createBaseSourceConfig(
+    source,
+    index,
+    placeholder,
+    maxSuggestions
+  );
+  const urlCandidate = sanitizeUrlInput(
+    toPlainString(source?.url ?? DEFAULT_LOCATOR_SOURCE.url)
+  );
+  const categories = parseArrayField(source?.categories);
+  const outFields = parseArrayField(source?.outFields);
+  const normalizedCountry = sanitizeText(source?.countryCode ?? "")
+    .replace(/[^A-Za-z]/g, "")
+    .slice(0, 3)
+    .toUpperCase();
+  const locationType = sanitizeText(source?.locationType ?? "").toLowerCase();
+  const supportedLocationType =
+    locationType === "street" || locationType === "rooftop"
+      ? locationType
+      : undefined;
+
+  return {
+    ...base,
+    type: SearchSourceType.Locator,
+    url: urlCandidate || DEFAULT_LOCATOR_SOURCE.url,
+    apiKey: sanitizeText(source?.apiKey ?? "") || undefined,
+    categories: categories.length ? categories : undefined,
+    countryCode: normalizedCountry || undefined,
+    locationType: supportedLocationType,
+    withinViewEnabled:
+      typeof source?.withinViewEnabled === "boolean"
+        ? source.withinViewEnabled
+        : undefined,
+    outFields: outFields.length ? outFields : undefined,
+  };
+};
+
+const normalizeLayerSourceConfig = (
+  source: Partial<LayerSearchSourceConfig> | undefined,
+  index: number,
+  placeholder: string,
+  maxSuggestions: number
+): LayerSearchSourceConfig => {
+  const base = createBaseSourceConfig(
+    source,
+    index,
+    placeholder,
+    maxSuggestions
+  );
+  const searchFields = parseArrayField(source?.searchFields);
+  const minSuggest =
+    typeof source?.minSuggestCharacters === "number"
+      ? parsePositiveInt(source.minSuggestCharacters, MIN_SEARCH_LENGTH)
+      : undefined;
+
+  return {
+    ...base,
+    type: SearchSourceType.Layer,
+    url: sanitizeUrlInput(toPlainString(source?.url ?? "")),
+    layerId: sanitizeNonEmptyText(source?.layerId ?? "", ""),
+    searchFields,
+    displayField: sanitizeText(source?.displayField ?? "") || undefined,
+    exactMatch:
+      typeof source?.exactMatch === "boolean" ? source.exactMatch : undefined,
+    minSuggestCharacters: minSuggest,
+    resultSymbol: source?.resultSymbol ? { ...source.resultSymbol } : undefined,
+  };
+};
+
+interface NormalizeSearchConfigOptions {
+  ensureDefaultSource?: boolean;
+}
+
+const isPlainSearchConfig = (
+  candidate: IMSearchConfig | SearchConfig | undefined
+): candidate is SearchConfig =>
+  Boolean(
+    candidate && typeof candidate === "object" && !("asMutable" in candidate)
+  );
+
+export const normalizeSearchConfig = (
+  config: IMSearchConfig | SearchConfig | undefined,
+  options?: NormalizeSearchConfigOptions
+): SearchConfig => {
+  const mutableCandidate = toMutableValue<SearchConfig>(config ?? null);
+  const mutable: Partial<SearchConfig> =
+    mutableCandidate ?? (isPlainSearchConfig(config) ? config : {});
+
+  const placeholder = sanitizeNonEmptyText(
+    toPlainString(mutable.placeholder ?? ""),
+    DEFAULT_PLACEHOLDER
+  );
+  const maxSuggestions =
+    typeof mutable.maxSuggestions === "number"
+      ? parsePositiveInt(mutable.maxSuggestions, DEFAULT_MAX_SUGGESTIONS)
+      : DEFAULT_MAX_SUGGESTIONS;
+  const zoomScale =
+    typeof mutable.zoomScale === "number" && mutable.zoomScale > 0
+      ? mutable.zoomScale
+      : DEFAULT_ZOOM_SCALE;
+
+  const rawSources = Array.isArray(mutable.searchSources)
+    ? mutable.searchSources
+    : [];
+  const normalizedSources = rawSources.map((source, index) =>
+    source.type === SearchSourceType.Layer
+      ? normalizeLayerSourceConfig(source, index, placeholder, maxSuggestions)
+      : normalizeLocatorSourceConfig(source, index, placeholder, maxSuggestions)
+  );
+
+  const ensureDefaultSource = options?.ensureDefaultSource ?? true;
+  const sources =
+    normalizedSources.length || !ensureDefaultSource
+      ? normalizedSources
+      : [
+          {
+            ...DEFAULT_LOCATOR_SOURCE,
+            placeholder,
+            maxSuggestions,
+          },
+        ];
+
+  return {
+    placeholder,
+    maxSuggestions,
+    zoomScale,
+    persistLastSearch:
+      typeof mutable.persistLastSearch === "boolean"
+        ? mutable.persistLastSearch
+        : true,
+    enableCoordinateSearch:
+      typeof mutable.enableCoordinateSearch === "boolean"
+        ? mutable.enableCoordinateSearch
+        : true,
+    coordinateZoomScale:
+      typeof mutable.coordinateZoomScale === "number" &&
+      mutable.coordinateZoomScale > 0
+        ? mutable.coordinateZoomScale
+        : DEFAULT_COORDINATE_ZOOM_SCALE,
+    preferredProjection:
+      mutable.preferredProjection ?? DEFAULT_COORDINATE_PREFERENCE,
+    showCoordinateBadge:
+      typeof mutable.showCoordinateBadge === "boolean"
+        ? mutable.showCoordinateBadge
+        : true,
+    styleVariant: mutable.styleVariant ?? DEFAULT_STYLE_VARIANT,
+    searchSources: sources,
+  };
 };
 
 const toPointGeometry = (
@@ -669,11 +864,11 @@ export const isValidSpatialReference = (
   sr: __esri.SpatialReferenceProperties | null | undefined
 ): boolean => {
   if (!sr || typeof sr !== "object") return false;
-  
+
   if (typeof sr.wkid === "number" && isFiniteNumber(sr.wkid) && sr.wkid > 0) {
     return true;
   }
-  
+
   return typeof sr.wkt === "string" && sr.wkt.trim().length > 0;
 };
 
@@ -694,7 +889,8 @@ export const isValidPointData = (
 ): boolean => {
   if (!data) return false;
   if (!isValidPointGeometry(data)) return false;
-  if (!data.spatialReference || typeof data.spatialReference !== "object") return false;
+  if (!data.spatialReference || typeof data.spatialReference !== "object")
+    return false;
   return isValidSpatialReference(data.spatialReference);
 };
 
@@ -817,7 +1013,10 @@ const isWithinBounds = (
     : isInRange(value, nMin, nMax);
 };
 
-const isCoordinateInRange = (coord: { easting: number; northing: number }): boolean =>
+const isCoordinateInRange = (coord: {
+  easting: number;
+  northing: number;
+}): boolean =>
   isInRange(coord.easting, MIN_EASTING, MAX_EASTING) &&
   isInRange(coord.northing, MIN_NORTHING, MAX_NORTHING);
 
@@ -982,7 +1181,7 @@ const checkBoundaryWarning = (
   const buffer = COORDINATE_WARNING_BUFFER_METERS;
   const nearWest = Math.abs(easting - bounds.eMin) <= buffer;
   const nearEast = Math.abs(bounds.eMax - easting) <= buffer;
-  
+
   return nearWest || nearEast ? ["coordinateWarningNearBoundary"] : [];
 };
 
@@ -1060,7 +1259,9 @@ const loadProjectionModule = async (
       projectionLoadCache.delete(projectionModule);
       throw error instanceof Error
         ? error
-        : new Error(typeof error === "string" ? error : "Projection load failed");
+        : new Error(
+            typeof error === "string" ? error : "Projection load failed"
+          );
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       projectionLoadInProgress.delete(projectionModule);
@@ -1104,7 +1305,11 @@ const validateTransformParams = (params: TransformParams): void => {
   if (!params.spatialReference) {
     throw new Error("coordinateErrorNoSpatialReference");
   }
-  if (!params.projection?.epsg || !isFiniteNumber(params.projection.epsg) || params.projection.epsg <= 0) {
+  if (
+    !params.projection?.epsg ||
+    !isFiniteNumber(params.projection.epsg) ||
+    params.projection.epsg <= 0
+  ) {
     throw new Error("coordinateErrorInvalidProjection");
   }
   if (!isFiniteNumber(params.easting) || !isFiniteNumber(params.northing)) {
@@ -1133,8 +1338,11 @@ export const transformSweref99ToMap = async (
 
   try {
     await loadProjectionModule(projectionModule);
-    const projectedGeometry = projectionModule.project(sourcePoint, spatialReference);
-    
+    const projectedGeometry = projectionModule.project(
+      sourcePoint,
+      spatialReference
+    );
+
     if (!isPointGeometry(projectedGeometry)) {
       throw new Error("coordinateErrorTransform");
     }
@@ -1144,7 +1352,7 @@ export const transformSweref99ToMap = async (
     if (!projectedGeometry.spatialReference) {
       projectedGeometry.spatialReference = spatialReference;
     }
-    
+
     return projectedGeometry;
   } catch (error) {
     if (error instanceof Error) throw error;

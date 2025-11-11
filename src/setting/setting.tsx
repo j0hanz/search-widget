@@ -40,6 +40,7 @@ import type {
   SettingProps,
 } from "../config/types";
 import {
+  normalizeSearchConfig,
   parseArrayField,
   parsePositiveInt,
   parsePositiveNumber,
@@ -71,31 +72,14 @@ const normalizeSource = (source: SearchSourceConfig): EditableSearchSource => {
   };
 };
 
-const toSearchConfig = (config: IMSearchConfig | undefined): SearchConfig => {
-  const mutable = config?.asMutable({ deep: true });
-  return {
-    placeholder: mutable?.placeholder || DEFAULT_PLACEHOLDER,
-    maxSuggestions: mutable?.maxSuggestions ?? DEFAULT_MAX_SUGGESTIONS,
-    zoomScale: mutable?.zoomScale ?? DEFAULT_ZOOM_SCALE,
-    persistLastSearch: mutable?.persistLastSearch ?? true,
-    enableCoordinateSearch: mutable?.enableCoordinateSearch ?? true,
-    coordinateZoomScale:
-      typeof mutable?.coordinateZoomScale === "number" &&
-      mutable.coordinateZoomScale > 0
-        ? mutable.coordinateZoomScale
-        : DEFAULT_COORDINATE_ZOOM_SCALE,
-    preferredProjection:
-      mutable?.preferredProjection ?? DEFAULT_COORDINATE_PREFERENCE,
-    showCoordinateBadge: mutable?.showCoordinateBadge ?? true,
-    styleVariant: mutable?.styleVariant ?? DEFAULT_STYLE_VARIANT,
-    searchSources: mutable?.searchSources?.length
-      ? mutable.searchSources.map(normalizeSource)
-      : [],
-  };
-};
-
 const buildLocatorConfig = (
-  base: { id: string; name: string; placeholder?: string; url: string; maxSuggestions?: number },
+  base: {
+    id: string;
+    name: string;
+    placeholder?: string;
+    url: string;
+    maxSuggestions?: number;
+  },
   locatorSource: EditableSearchSource & LocatorSearchSourceConfig
 ): LocatorSearchSourceConfig => {
   const categoriesArray = parseArrayField(locatorSource.categories);
@@ -125,7 +109,13 @@ const buildLocatorConfig = (
 };
 
 const buildLayerConfig = (
-  base: { id: string; name: string; placeholder?: string; url: string; maxSuggestions?: number },
+  base: {
+    id: string;
+    name: string;
+    placeholder?: string;
+    url: string;
+    maxSuggestions?: number;
+  },
   layerSource: EditableSearchSource & LayerSearchSourceConfig
 ): LayerSearchSourceConfig => {
   const searchFieldsArray = layerSource.searchFieldsText
@@ -167,8 +157,14 @@ const buildSourceConfig = (
   };
 
   return source.type === SearchSourceType.Layer
-    ? buildLayerConfig(base, source as EditableSearchSource & LayerSearchSourceConfig)
-    : buildLocatorConfig(base, source as EditableSearchSource & LocatorSearchSourceConfig);
+    ? buildLayerConfig(
+        base,
+        source as EditableSearchSource & LayerSearchSourceConfig
+      )
+    : buildLocatorConfig(
+        base,
+        source as EditableSearchSource & LocatorSearchSourceConfig
+      );
 };
 
 const toConfigSources = (
@@ -181,11 +177,14 @@ const computeSourceErrors = (sources: EditableSearchSource[]) =>
 const Setting = (props: SettingProps) => {
   const styles = useSettingStyles();
   const translate = hooks.useTranslation(defaultMessages);
-  const config = toSearchConfig(props.config);
+  const config = normalizeSearchConfig(props.config, {
+    ensureDefaultSource: false,
+  });
+  const configEditableSources = config.searchSources.map(normalizeSource);
 
   const [localSources, setLocalSources] = React.useState<
     EditableSearchSource[]
-  >(config.searchSources);
+  >(() => configEditableSources);
   const [placeholder, setPlaceholder] = React.useState(config.placeholder);
   const [maxSuggestions, setMaxSuggestions] = React.useState(
     config.maxSuggestions
@@ -210,12 +209,13 @@ const Setting = (props: SettingProps) => {
     config.styleVariant ?? DEFAULT_STYLE_VARIANT
   );
   const [sourceErrors, setSourceErrors] = React.useState<string[][]>(() =>
-    computeSourceErrors(config.searchSources)
+    computeSourceErrors(configEditableSources)
   );
   const sourceIdCounterRef = React.useRef(0);
 
   hooks.useUpdateEffect(() => {
-    setLocalSources(config.searchSources);
+    const nextSources = config.searchSources.map(normalizeSource);
+    setLocalSources(nextSources);
     setPlaceholder(config.placeholder);
     setMaxSuggestions(config.maxSuggestions);
     setZoomScale(config.zoomScale);
@@ -229,7 +229,7 @@ const Setting = (props: SettingProps) => {
     );
     setShowCoordinateBadge(config.showCoordinateBadge ?? true);
     setStyleVariant(config.styleVariant ?? DEFAULT_STYLE_VARIANT);
-    setSourceErrors(computeSourceErrors(config.searchSources));
+    setSourceErrors(computeSourceErrors(nextSources));
   }, [props.config]);
 
   const commitConfig = hooks.useEventCallback(
@@ -283,13 +283,18 @@ const Setting = (props: SettingProps) => {
           return sanitized || undefined;
         }
         case "locationType": {
-          const normalized = sanitizeText(toPlainString(rawValue)).toLowerCase();
+          const normalized = sanitizeText(
+            toPlainString(rawValue)
+          ).toLowerCase();
           return normalized === "street" || normalized === "rooftop"
             ? normalized
             : undefined;
         }
         case "minSuggestCharacters":
-          return parsePositiveInt(rawValue as number | string, MIN_SEARCH_LENGTH);
+          return parsePositiveInt(
+            rawValue as number | string,
+            MIN_SEARCH_LENGTH
+          );
         case "resultSymbol":
           return (rawValue as __esri.SimpleMarkerSymbolProperties) ?? undefined;
         default:

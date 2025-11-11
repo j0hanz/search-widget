@@ -20,20 +20,11 @@ import {
   COORDINATE_GRAPHIC_SYMBOL,
   type CoordinateResultSummary,
   type CoordinateSearchResult,
-  DEFAULT_COORDINATE_PREFERENCE,
   DEFAULT_COORDINATE_ZOOM_SCALE,
-  DEFAULT_LOCATOR_SOURCE,
-  DEFAULT_MAX_SUGGESTIONS,
-  DEFAULT_PLACEHOLDER,
   DEFAULT_STYLE_VARIANT,
-  DEFAULT_ZOOM_SCALE,
-  type IMSearchConfig,
   type PointJSON,
-  type SearchConfig,
   type SearchResult,
   type SearchResultSummary,
-  type SearchSourceConfig,
-  SearchSourceType,
   type StateWithSearch,
   SWEREF99_PROJECTIONS,
   type WidgetProps,
@@ -56,6 +47,7 @@ import {
   isLikelyCoordinateInput,
   isValidPointData,
   isValidSpatialReference,
+  normalizeSearchConfig,
   summarizeSearchResult,
   toMutableValue,
 } from "../shared/utils";
@@ -66,7 +58,8 @@ const isGoToCapableView = (
 ): candidate is __esri.MapView | __esri.SceneView =>
   Boolean(
     candidate &&
-      typeof (candidate as __esri.MapView | __esri.SceneView).goTo === "function"
+      typeof (candidate as __esri.MapView | __esri.SceneView).goTo ===
+        "function"
   );
 
 const isGraphicsLayerDestroyed = (
@@ -106,73 +99,10 @@ const toCoordinateResultSummary = (
       : null,
 });
 
-const normalizeConfigValue = (
-  config: IMSearchConfig | undefined
-): SearchConfig => {
-  const mutable =
-    (config?.asMutable?.({ deep: true }) as Partial<SearchConfig>) ?? {};
-  const baseSources = Array.isArray(mutable.searchSources)
-    ? mutable.searchSources
-    : [];
-  const placeholder = mutable.placeholder ?? DEFAULT_PLACEHOLDER;
-  const maxSuggestions = mutable.maxSuggestions ?? DEFAULT_MAX_SUGGESTIONS;
-
-  const sources: SearchSourceConfig[] = baseSources.length
-    ? baseSources.map((source, index) => {
-        const base = {
-          id: source?.id ?? `search-source-${index}`,
-          name: source?.name ?? `Source ${index + 1}`,
-          placeholder: source?.placeholder ?? placeholder,
-          maxSuggestions: source?.maxSuggestions ?? maxSuggestions,
-        };
-        return source?.type === SearchSourceType.Layer
-          ? {
-              ...base,
-              type: SearchSourceType.Layer,
-              url: source.url ?? "",
-              layerId: source.layerId ?? "",
-              searchFields: source.searchFields ? [...source.searchFields] : [],
-              displayField: source.displayField,
-              exactMatch: source.exactMatch,
-            }
-          : {
-              ...base,
-              type: SearchSourceType.Locator,
-              url:
-                source?.type === SearchSourceType.Locator && source.url
-                  ? source.url
-                  : DEFAULT_LOCATOR_SOURCE.url,
-              apiKey:
-                source?.type === SearchSourceType.Locator
-                  ? source.apiKey
-                  : undefined,
-            };
-      })
-    : [{ ...DEFAULT_LOCATOR_SOURCE }];
-
-  return {
-    placeholder,
-    maxSuggestions,
-    zoomScale: mutable.zoomScale ?? DEFAULT_ZOOM_SCALE,
-    persistLastSearch: mutable.persistLastSearch ?? true,
-    searchSources: sources,
-    enableCoordinateSearch: mutable.enableCoordinateSearch ?? true,
-    coordinateZoomScale:
-      typeof mutable.coordinateZoomScale === "number" &&
-      mutable.coordinateZoomScale > 0
-        ? mutable.coordinateZoomScale
-        : DEFAULT_COORDINATE_ZOOM_SCALE,
-    preferredProjection:
-      mutable.preferredProjection ?? DEFAULT_COORDINATE_PREFERENCE,
-    showCoordinateBadge: mutable.showCoordinateBadge ?? true,
-    styleVariant: mutable.styleVariant ?? DEFAULT_STYLE_VARIANT,
-  };
-};
-
 const Widget = (props: WidgetProps) => {
   const { id, useMapWidgetIds } = props;
   const translate = hooks.useTranslation(defaultMessages);
-  const config = normalizeConfigValue(props.config);
+  const config = normalizeSearchConfig(props.config);
   const styles = useUiStyles(config.styleVariant ?? DEFAULT_STYLE_VARIANT);
 
   const mapWidgetId = Array.isArray(useMapWidgetIds)
@@ -480,6 +410,25 @@ const Widget = (props: WidgetProps) => {
     setCoordinateLoading(false);
     lastCoordinateTermRef.current = "";
   });
+  const exitCoordinateMode = hooks.useEventCallback(() => {
+    if (isCoordinateInputRef.current) {
+      setCoordinateInputFlag(false);
+    }
+    clearCoordinateArtifacts();
+  });
+  const enterCoordinateMode = hooks.useEventCallback(() => {
+    const wasCoordinate = isCoordinateInputRef.current;
+    if (!wasCoordinate) {
+      clearResults();
+      setSearching(false);
+      setError(null);
+    }
+    setCoordinateInputFlag(true);
+  });
+  const resetCoordinateDetection = hooks.useEventCallback(() => {
+    setDetectionResult(null);
+    exitCoordinateMode();
+  });
   const triggerCoordinateSearch = hooks.useEventCallback((input: string) => {
     if (!input) return;
     if (!modulesRef.current) {
@@ -507,47 +456,30 @@ const Widget = (props: WidgetProps) => {
     const normalized = term ?? "";
     setLastSearchTerm(normalized);
 
-    if (!config.enableCoordinateSearch) {
-      setDetectionResult(null);
-      if (isCoordinateInputRef.current) {
-        setCoordinateInputFlag(false);
-        clearCoordinateArtifacts();
-      }
-      return;
-    }
-
-    if (!normalized) {
-      setDetectionResult(null);
-      if (isCoordinateInputRef.current) {
-        setCoordinateInputFlag(false);
-        clearCoordinateArtifacts();
-      }
+    if (!config.enableCoordinateSearch || !normalized) {
+      resetCoordinateDetection();
       return;
     }
 
     const detection = isLikelyCoordinateInput(normalized);
     setDetectionResult(detection);
 
-    const wasCoordinate = isCoordinateInputRef.current;
     const shouldUseCoordinates =
       detection.isCoordinate && detection.confidence !== "low";
 
-    setCoordinateInputFlag(shouldUseCoordinates);
-
-    if (shouldUseCoordinates) {
-      if (!wasCoordinate) {
-        clearResults();
-        setSearching(false);
-        setError(null);
-      }
-
-      if (lastCoordinateTermRef.current !== normalized) {
-        lastCoordinateTermRef.current = normalized;
-        triggerCoordinateSearch(normalized);
-      }
-    } else if (wasCoordinate) {
-      clearCoordinateArtifacts();
+    if (!shouldUseCoordinates) {
+      exitCoordinateMode();
+      return;
     }
+
+    enterCoordinateMode();
+
+    if (lastCoordinateTermRef.current === normalized) {
+      return;
+    }
+
+    lastCoordinateTermRef.current = normalized;
+    triggerCoordinateSearch(normalized);
   });
 
   hooks.useUpdateEffect(() => {
