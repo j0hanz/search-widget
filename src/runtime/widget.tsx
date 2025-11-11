@@ -1,6 +1,6 @@
 /** @jsx jsx */
 /** @jsxFrag React.Fragment */
-import { hooks, type ImmutableObject, jsx, React, ReactRedux } from "jimu-core";
+import { hooks, jsx, React, ReactRedux } from "jimu-core";
 import { type JimuMapView, JimuMapViewComponent } from "jimu-arcgis";
 import {
   Alert,
@@ -28,7 +28,6 @@ import {
   DEFAULT_STYLE_VARIANT,
   DEFAULT_ZOOM_SCALE,
   type IMSearchConfig,
-  type Maybe,
   type PointJSON,
   type SearchConfig,
   type SearchResult,
@@ -106,26 +105,6 @@ const isGraphicsLayerDestroyed = (
   return Boolean(candidate.destroyed);
 };
 
-const useCoordinateSummary = (
-  summary: Maybe<
-    CoordinateResultSummary | ImmutableObject<CoordinateResultSummary>
-  >
-): CoordinateResultSummary | null => {
-  const cacheRef = React.useRef<{
-    source: typeof summary;
-    value: CoordinateResultSummary | null;
-  } | null>(null);
-
-  if (!cacheRef.current || cacheRef.current.source !== summary) {
-    cacheRef.current = {
-      source: summary,
-      value: toMutableValue<CoordinateResultSummary>(summary),
-    };
-  }
-
-  return cacheRef.current.value;
-};
-
 const normalizeConfigValue = (
   config: IMSearchConfig | undefined
 ): SearchConfig => {
@@ -189,56 +168,16 @@ const normalizeConfigValue = (
   };
 };
 
-const useNormalizedConfig = (
-  config: IMSearchConfig | undefined
-): SearchConfig => {
-  const cacheRef = React.useRef<{
-    source: IMSearchConfig | undefined;
-    value: SearchConfig;
-  } | null>(null);
-
-  if (!cacheRef.current || cacheRef.current.source !== config) {
-    cacheRef.current = {
-      source: config,
-      value: normalizeConfigValue(config),
-    };
-  }
-
-  return cacheRef.current.value;
-};
-
-const useSearchResultSummaries = (results: unknown): SearchResultSummary[] => {
-  const cacheRef = React.useRef<{
-    source: unknown;
-    value: SearchResultSummary[];
-  } | null>(null);
-
-  if (!cacheRef.current || cacheRef.current.source !== results) {
-    const mutable = toMutableValue<SearchResultSummary[]>(results) ?? [];
-    cacheRef.current = {
-      source: results,
-      value: mutable,
-    };
-  }
-
-  return cacheRef.current.value;
-};
-
 const Widget = (props: WidgetProps) => {
   const { id, useMapWidgetIds } = props;
   const translate = hooks.useTranslation(defaultMessages);
-  const config = useNormalizedConfig(props.config);
+  const config = normalizeConfigValue(props.config);
   const styles = useUiStyles(config.styleVariant ?? DEFAULT_STYLE_VARIANT);
 
   const mapWidgetId = Array.isArray(useMapWidgetIds)
-    ? (() => {
-        for (const value of useMapWidgetIds) {
-          if (typeof value !== "string") continue;
-          const trimmed = value.trim();
-          if (trimmed) return trimmed;
-        }
-        return null;
-      })()
+    ? (useMapWidgetIds
+        .find((v): v is string => typeof v === "string" && v.trim().length > 0)
+        ?.trim() ?? null)
     : null;
 
   const defaultStateRef = React.useRef(createDefaultWidgetState());
@@ -258,8 +197,11 @@ const Widget = (props: WidgetProps) => {
     React.useState<CoordinateDetectionResult | null>(null);
 
   const rawResultsRef = React.useRef<SearchResult[]>([]);
-  const results = useSearchResultSummaries(widgetState.results);
-  const coordinateResult = useCoordinateSummary(widgetState.coordinateResult);
+  const results =
+    toMutableValue<SearchResultSummary[]>(widgetState.results) ?? [];
+  const coordinateResult = toMutableValue<CoordinateResultSummary>(
+    widgetState.coordinateResult
+  );
 
   const { modules, error: moduleError } = useEsriSearchModules();
 

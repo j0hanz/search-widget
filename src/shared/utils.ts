@@ -386,9 +386,13 @@ const normalizeNumericString = (raw: string): string => {
   const withSpaces = raw.replace(/[\u00A0]/g, " ");
   let cleaned = withSpaces.replace(/[^0-9\s,.-]/g, "");
 
-  if (!cleaned) return "";
-  if (/[,.-]{2,}/.test(cleaned)) return "";
-  if (/^[,.]+|[,.-]+$/.test(cleaned.replace(/^-/, ""))) return "";
+  if (
+    !cleaned ||
+    /[,.-]{2,}/.test(cleaned) ||
+    /^[,.]+|[,.-]+$/.test(cleaned.replace(/^-/, ""))
+  ) {
+    return "";
+  }
 
   let sign = "";
   if (cleaned.startsWith("-")) {
@@ -400,22 +404,18 @@ const normalizeNumericString = (raw: string): string => {
 
   cleaned = cleaned.replace(/[+-]/g, "");
 
-  const applySign = (value: string) =>
-    value && sign === "-" ? `-${value}` : value;
-
-  const buildDecimal = (integerPart: string, decimalPart: string) => {
-    const sanitizedInteger = integerPart.replace(/[,.-]/g, "");
-    const sanitizedDecimal = decimalPart.replace(/[,.-]/g, "");
-    if (!sanitizedInteger && !sanitizedDecimal) return "";
-    if (!sanitizedDecimal) return sanitizedInteger;
-    return `${sanitizedInteger}.${sanitizedDecimal}`;
+  const buildDecimal = (intPart: string, decPart: string) => {
+    const sanitizedInt = intPart.replace(/[,.-]/g, "");
+    const sanitizedDec = decPart.replace(/[,.-]/g, "");
+    if (!sanitizedInt && !sanitizedDec) return "";
+    return sanitizedDec ? `${sanitizedInt}.${sanitizedDec}` : sanitizedInt;
   };
+
   const spaceGroups = cleaned.split(/\s+/).filter(Boolean);
   const hasThousandSpaces =
     spaceGroups.length > 1 &&
-    spaceGroups[0] &&
-    spaceGroups.slice(1).every((g) => g && g.length === 3) &&
-    spaceGroups[0].length <= 3;
+    spaceGroups[0].length <= 3 &&
+    spaceGroups.slice(1).every((g) => g.length === 3);
 
   if (hasThousandSpaces) {
     cleaned = cleaned.replace(/\s+/g, "");
@@ -425,34 +425,26 @@ const normalizeNumericString = (raw: string): string => {
   const commaCount = (cleaned.match(/,/g) ?? []).length;
   const totalSeparators = dotCount + commaCount;
 
+  if (totalSeparators === 0) return sign + cleaned;
   if (totalSeparators > 2) return "";
-  if (totalSeparators === 0) return applySign(cleaned);
 
-  // Single separator cases - unambiguous decimal point
+  // Single separator - decimal point
   if (totalSeparators === 1) {
     const parts = cleaned.split(/[,.]/);
-    return applySign(buildDecimal(parts[0], parts[1]));
+    return sign + buildDecimal(parts[0], parts[1]);
   }
 
   // Multiple separators - detect thousands vs decimal
-  if (dotCount > 1 && commaCount === 0) {
-    return applySign(cleaned.replace(/\./g, ""));
-  }
-  if (commaCount > 1 && dotCount === 0) {
-    return applySign(cleaned.replace(/,/g, ""));
-  }
+  if (dotCount > 1) return sign + cleaned.replace(/\./g, "");
+  if (commaCount > 1) return sign + cleaned.replace(/,/g, "");
 
-  // Mixed separators - last one is decimal point
-  if (commaCount >= 1 && dotCount >= 1) {
-    const lastCommaIdx = cleaned.lastIndexOf(",");
-    const lastDotIdx = cleaned.lastIndexOf(".");
-    const decimalIdx = Math.max(lastCommaIdx, lastDotIdx);
-    const before = cleaned.slice(0, decimalIdx).replace(/[,.]/g, "");
-    const after = cleaned.slice(decimalIdx + 1);
-    return applySign(buildDecimal(before, after));
-  }
-
-  return applySign(cleaned);
+  // Mixed - last one is decimal
+  const lastCommaIdx = cleaned.lastIndexOf(",");
+  const lastDotIdx = cleaned.lastIndexOf(".");
+  const decimalIdx = Math.max(lastCommaIdx, lastDotIdx);
+  const before = cleaned.slice(0, decimalIdx).replace(/[,.]/g, "");
+  const after = cleaned.slice(decimalIdx + 1);
+  return sign + buildDecimal(before, after);
 };
 
 const parseNumeric = (raw: string): number | null => {
@@ -505,12 +497,14 @@ const detectAxisOrder = (
   first: number,
   second: number
 ): { easting: number; northing: number; warning?: string } | null => {
+  if (isLikelyWgs84(first, second)) return null;
+
   const firstIsEasting = first >= MIN_EASTING && first <= MAX_EASTING;
   const firstIsNorthing = first >= MIN_NORTHING && first <= MAX_NORTHING;
   const secondIsEasting = second >= MIN_EASTING && second <= MAX_EASTING;
   const secondIsNorthing = second >= MIN_NORTHING && second <= MAX_NORTHING;
 
-  // Unambiguous cases: exactly one interpretation possible
+  // Unambiguous: exactly one interpretation
   if (
     firstIsEasting &&
     !firstIsNorthing &&
@@ -526,35 +520,30 @@ const detectAxisOrder = (
   )
     return { easting: second, northing: first };
 
-  // One value clearly in range, other clearly out of range
+  // One clearly in range, other out
   if (firstIsEasting && !secondIsEasting && !secondIsNorthing)
     return { easting: first, northing: second };
   if (secondIsEasting && !firstIsEasting && !firstIsNorthing)
     return { easting: second, northing: first };
 
-  // Check for WGS84 coordinates before accepting ambiguous interpretations
-  if (isLikelyWgs84(first, second)) return null;
-
-  // Ambiguous case: both values in valid ranges, prefer easting-first convention
-  // Add warning to inform user of ambiguity
+  // Ambiguous: prefer easting-first with warning
   if (firstIsEasting && secondIsNorthing) {
     return {
       easting: first,
       northing: second,
-      warning: !secondIsEasting ? undefined : "coordinateWarningAmbiguousOrder",
+      warning: secondIsEasting ? "coordinateWarningAmbiguousOrder" : undefined,
     };
   }
 
-  // Ambiguous case: prefer northing-first only if first is not also easting
+  // Ambiguous: northing-first only if first is not also easting
   if (firstIsNorthing && secondIsEasting) {
     return {
       easting: second,
       northing: first,
-      warning: !firstIsEasting ? undefined : "coordinateWarningAmbiguousOrder",
+      warning: firstIsEasting ? "coordinateWarningAmbiguousOrder" : undefined,
     };
   }
 
-  // Cannot reliably determine axis order
   return null;
 };
 
@@ -889,45 +878,41 @@ const rankZoneCandidates = (
   });
 };
 
-const buildWarningMessages = (
-  projection: Sweref99Projection | null,
-  easting: number
-): string[] => {
-  if (!projection) return [];
-  const { bounds } = projection;
-  const warningBuffer = COORDINATE_WARNING_BUFFER_METERS;
-  const nearWest = Math.abs(easting - bounds.eMin) <= warningBuffer;
-  const nearEast = Math.abs(bounds.eMax - easting) <= warningBuffer;
-  return nearWest || nearEast ? ["coordinateWarningNearBoundary"] : [];
-};
-
 const buildDetectionResult = (
   projection: Sweref99Projection | null,
   confidence: number,
   alternatives: Sweref99Projection[],
   easting: number
-): ProjectionDetectionResult => ({
-  projection,
-  confidence,
-  alternatives,
-  warnings: buildWarningMessages(projection, easting),
-});
+): ProjectionDetectionResult => {
+  const warnings: string[] = [];
+  if (projection) {
+    const { bounds } = projection;
+    const buffer = COORDINATE_WARNING_BUFFER_METERS;
+    if (
+      Math.abs(easting - bounds.eMin) <= buffer ||
+      Math.abs(bounds.eMax - easting) <= buffer
+    ) {
+      warnings.push("coordinateWarningNearBoundary");
+    }
+  }
+  return { projection, confidence, alternatives, warnings };
+};
 
 export const detectProjection = (
   params: DetectProjectionParams
 ): ProjectionDetectionResult => {
-  const { easting, northing } = params;
-  const preference =
-    params.preference ??
-    DEFAULT_COORDINATE_PREFERENCE ??
-    CoordinateProjectionPreference.Auto;
+  const {
+    easting,
+    northing,
+    preference = DEFAULT_COORDINATE_PREFERENCE,
+  } = params;
   const mapLon = getLonFromPoint(params.mapCenter);
 
-  const tmLikely = isInRange(easting, TM_EASTING_MIN, TM_EASTING_MAX);
-  const zoneLikely = isInRange(easting, ZONE_EASTING_MIN, ZONE_EASTING_MAX);
-
+  const tmLikely = easting >= TM_EASTING_MIN && easting <= TM_EASTING_MAX;
+  const zoneLikely = easting >= ZONE_EASTING_MIN && easting <= ZONE_EASTING_MAX;
   const zoneCandidates = zoneLikely ? findMatchingZones(easting, northing) : [];
 
+  // Preference: Zone with candidates
   if (
     preference === CoordinateProjectionPreference.Zone &&
     zoneCandidates.length
@@ -936,26 +921,30 @@ export const detectProjection = (
     return buildDetectionResult(ranked[0], 1, ranked.slice(1), easting);
   }
 
+  // Preference: TM
   if (preference === CoordinateProjectionPreference.Tm && tmLikely) {
     return buildDetectionResult(SWEREF99_TM, 0.9, zoneCandidates, easting);
   }
 
+  // Single zone match
   if (zoneCandidates.length === 1)
     return buildDetectionResult(zoneCandidates[0], 1, [], easting);
 
+  // Multiple zones
   if (zoneCandidates.length > 1) {
     const ranked = rankZoneCandidates(zoneCandidates, mapLon);
-    const confidence = mapLon === null ? 0.7 : 0.85;
     return buildDetectionResult(
       ranked[0],
-      confidence,
+      mapLon === null ? 0.7 : 0.85,
       ranked.slice(1),
       easting
     );
   }
 
+  // Fallback to TM
   if (tmLikely) return buildDetectionResult(SWEREF99_TM, 0.6, [], easting);
 
+  // No projection found
   return {
     projection: null,
     confidence: 0,

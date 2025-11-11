@@ -70,69 +70,71 @@ const reducer = (
   action: SearchWidgetAction
 ): IMSearchWidgetGlobalState => {
   const { widgetId } = action;
-  if (!widgetId) {
-    return inputState;
-  }
+  if (!widgetId) return inputState;
+
   const state = ensureWidgetEntry(inputState, widgetId);
   const widgetState = state.byId?.[widgetId];
-  if (!widgetState) {
-    return state;
-  }
+  if (!widgetState) return state;
+
+  let next: IMSearchWidgetState;
 
   switch (action.type) {
-    case SearchActionType.SetResults: {
-      const next = widgetState
-        .set("results", mapResults(action.results))
-        .set("isSearching", false);
-      return state.setIn(["byId", widgetId], next);
-    }
-    case SearchActionType.ClearResults: {
-      const next = widgetState
-        .set("results", mapResults([]))
-        .set("lastSearchTerm", "")
-        .set("isSearching", false)
-        .set("errorMessage", null);
-      return state.setIn(["byId", widgetId], next);
-    }
-    case SearchActionType.SetActiveSource: {
-      const next = widgetState.set("activeSourceIndex", action.index);
-      return state.setIn(["byId", widgetId], next);
-    }
-    case SearchActionType.SetSearching: {
-      const next = widgetState
-        .set("isSearching", action.value)
-        .set("errorMessage", null);
-      return state.setIn(["byId", widgetId], next);
-    }
-    case SearchActionType.SetLastSearchTerm: {
-      const next = widgetState.set("lastSearchTerm", action.value);
-      return state.setIn(["byId", widgetId], next);
-    }
-    case SearchActionType.SetError: {
-      const next = widgetState
-        .set("errorMessage", action.message)
-        .set("isSearching", false);
-      return state.setIn(["byId", widgetId], next);
-    }
-    case SearchActionType.SetCoordinateInput: {
-      const next = widgetState
-        .set("isCoordinateInput", Boolean(action.isCoordinate))
-        .set(
-          "coordinateResult",
-          action.isCoordinate ? widgetState.coordinateResult : null
-        );
-      return state.setIn(["byId", widgetId], next);
-    }
-    case SearchActionType.SetCoordinateResult: {
-      const next = widgetState.set("coordinateResult", action.result ?? null);
-      return state.setIn(["byId", widgetId], next);
-    }
-    case SearchActionType.ClearCoordinateResult: {
-      const next = widgetState.set("coordinateResult", null);
-      return state.setIn(["byId", widgetId], next);
-    }
+    case SearchActionType.SetResults:
+      next = widgetState.merge({
+        results: mapResults(action.results),
+        isSearching: false,
+      });
+      break;
+
+    case SearchActionType.ClearResults:
+      next = widgetState.merge({
+        results: mapResults([]),
+        lastSearchTerm: "",
+        isSearching: false,
+        errorMessage: null,
+      });
+      break;
+
+    case SearchActionType.SetActiveSource:
+      next = widgetState.set("activeSourceIndex", action.index);
+      break;
+
+    case SearchActionType.SetSearching:
+      next = widgetState.merge({
+        isSearching: action.value,
+        errorMessage: null,
+      });
+      break;
+
+    case SearchActionType.SetLastSearchTerm:
+      next = widgetState.set("lastSearchTerm", action.value);
+      break;
+
+    case SearchActionType.SetError:
+      next = widgetState.merge({
+        errorMessage: action.message,
+        isSearching: false,
+      });
+      break;
+
+    case SearchActionType.SetCoordinateInput:
+      next = widgetState.merge({
+        isCoordinateInput: Boolean(action.isCoordinate),
+        coordinateResult: action.isCoordinate
+          ? widgetState.coordinateResult
+          : null,
+      });
+      break;
+
+    case SearchActionType.SetCoordinateResult:
+      next = widgetState.set("coordinateResult", action.result ?? null);
+      break;
+
+    case SearchActionType.ClearCoordinateResult:
+      next = widgetState.set("coordinateResult", null);
+      break;
   }
-  return state;
+  return state.setIn(["byId", widgetId], next);
 };
 
 export const searchReducer = reducer;
@@ -156,8 +158,8 @@ export const searchActions = {
   ): SetActiveSourceAction => ({
     type: SearchActionType.SetActiveSource,
     index:
-      typeof index === "number" && Number.isFinite(index)
-        ? Math.max(0, Math.floor(index))
+      typeof index === "number" && Number.isFinite(index) && index >= 0
+        ? index
         : 0,
     widgetId,
   }),
@@ -194,94 +196,81 @@ export const searchActions = {
     result: SearchWidgetState["coordinateResult"],
     widgetId: string
   ): SetCoordinateResultAction => {
-    let sanitized: SearchWidgetState["coordinateResult"] = null;
-    if (result && typeof result === "object") {
-      try {
-        const projectionId =
-          typeof result.projectionId === "string" ? result.projectionId : "";
+    if (!result || typeof result !== "object") {
+      return {
+        type: SearchActionType.SetCoordinateResult,
+        result: null,
+        widgetId,
+      };
+    }
 
-        const easting =
-          typeof result.easting === "number" && Number.isFinite(result.easting)
-            ? result.easting
-            : 0;
+    const projectionId =
+      typeof result.projectionId === "string" ? result.projectionId : "";
+    if (!projectionId) {
+      return {
+        type: SearchActionType.SetCoordinateResult,
+        result: null,
+        widgetId,
+      };
+    }
 
-        const northing =
-          typeof result.northing === "number" &&
-          Number.isFinite(result.northing)
-            ? result.northing
-            : 0;
+    const easting =
+      typeof result.easting === "number" && Number.isFinite(result.easting)
+        ? result.easting
+        : 0;
+    const northing =
+      typeof result.northing === "number" && Number.isFinite(result.northing)
+        ? result.northing
+        : 0;
+    const confidence =
+      typeof result.confidence === "number" &&
+      Number.isFinite(result.confidence)
+        ? result.confidence
+        : 0;
 
-        const confidence =
-          typeof result.confidence === "number" &&
-          Number.isFinite(result.confidence)
-            ? result.confidence
-            : 0;
+    let mapPoint: SearchWidgetState["coordinateResult"]["mapPoint"] = null;
+    const point = result.mapPoint;
+    if (
+      point &&
+      typeof point === "object" &&
+      typeof point.x === "number" &&
+      typeof point.y === "number" &&
+      point.spatialReference &&
+      typeof point.spatialReference === "object"
+    ) {
+      const sr = point.spatialReference;
+      const hasValidWkid =
+        typeof sr.wkid === "number" && Number.isFinite(sr.wkid) && sr.wkid > 0;
+      const hasValidWkt =
+        typeof sr.wkt === "string" && sr.wkt.trim().length > 0;
 
-        if (!projectionId) {
-          return {
-            type: SearchActionType.SetCoordinateResult,
-            result: null,
-            widgetId,
-          };
-        }
-        let mapPoint: SearchWidgetState["coordinateResult"]["mapPoint"] = null;
-        if (
-          result.mapPoint &&
-          typeof result.mapPoint === "object" &&
-          typeof result.mapPoint.x === "number" &&
-          typeof result.mapPoint.y === "number" &&
-          result.mapPoint.spatialReference &&
-          typeof result.mapPoint.spatialReference === "object"
-        ) {
-          const sr = result.mapPoint.spatialReference;
-          const hasValidWkid =
-            typeof sr.wkid === "number" &&
-            Number.isFinite(sr.wkid) &&
-            sr.wkid > 0;
-          const hasValidWkt =
-            typeof sr.wkt === "string" && sr.wkt.trim().length > 0;
-          if (hasValidWkid || hasValidWkt) {
-            mapPoint = {
-              x: result.mapPoint.x,
-              y: result.mapPoint.y,
-              spatialReference: hasValidWkid
-                ? { wkid: sr.wkid }
-                : { wkt: sr.wkt },
-            };
-          } else {
-            console.log(
-              "Search widget: invalid spatial reference in coordinate result"
-            );
-          }
-        }
-
-        sanitized = {
-          projectionId,
-          easting,
-          northing,
-          warnings: Array.isArray(result.warnings)
-            ? result.warnings.filter((w) => typeof w === "string")
-            : [],
-          confidence,
-          format: result.format ?? CoordinateInputFormat.Unknown,
-          alternativeProjectionIds: Array.isArray(
-            result.alternativeProjectionIds
-          )
-            ? result.alternativeProjectionIds.filter(
-                (id) => typeof id === "string"
-              )
-            : [],
-          mapPoint,
+      if (hasValidWkid || hasValidWkt) {
+        mapPoint = {
+          x: point.x,
+          y: point.y,
+          spatialReference: hasValidWkid ? { wkid: sr.wkid } : { wkt: sr.wkt },
         };
-      } catch (error) {
-        console.log("Search widget: invalid coordinate result data", error);
-        sanitized = null;
       }
     }
 
     return {
       type: SearchActionType.SetCoordinateResult,
-      result: sanitized,
+      result: {
+        projectionId,
+        easting,
+        northing,
+        warnings: Array.isArray(result.warnings)
+          ? result.warnings.filter((w) => typeof w === "string")
+          : [],
+        confidence,
+        format: result.format ?? CoordinateInputFormat.Unknown,
+        alternativeProjectionIds: Array.isArray(result.alternativeProjectionIds)
+          ? result.alternativeProjectionIds.filter(
+              (id) => typeof id === "string"
+            )
+          : [],
+        mapPoint,
+      },
       widgetId,
     };
   },

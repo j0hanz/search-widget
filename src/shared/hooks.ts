@@ -33,24 +33,18 @@ import {
   validateCoordinates,
 } from "./utils";
 
-const clampToValidIndex = (index: number, arrayLength: number): number => {
-  if (arrayLength === 0) return -1;
-  return Math.max(0, Math.min(index, arrayLength - 1));
-};
+const clampToValidIndex = (index: number, arrayLength: number): number =>
+  arrayLength === 0 ? -1 : Math.min(Math.max(0, index), arrayLength - 1);
 
 const isValidFeatureLayer = (
   layer: __esri.FeatureLayer | null | undefined
-): boolean => {
-  if (!layer) return false;
-  const candidate = layer as Partial<__esri.FeatureLayer> & {
-    isTable?: boolean;
-  };
-  return (
-    !candidate.isTable &&
-    layer.type === "feature" &&
-    layer.loadStatus !== "failed"
+): boolean =>
+  Boolean(
+    layer &&
+      layer.type === "feature" &&
+      layer.loadStatus !== "failed" &&
+      !(layer as Partial<__esri.FeatureLayer> & { isTable?: boolean }).isTable
   );
-};
 
 interface Destroyable {
   destroy?: () => void;
@@ -132,7 +126,8 @@ const loadFeatureLayer = async (
       }),
     ]);
     return isValidFeatureLayer(layer);
-  } catch {
+  } catch (error) {
+    console.log("Search widget: layer load failed", error);
     return false;
   }
 };
@@ -754,6 +749,15 @@ export const useCoordinateSearch = (options: CoordinateSearchOptions) => {
         });
         ensureCurrent();
 
+        // Combine all warnings, ensuring uniqueness
+        const combinedWarnings = Array.from(
+          new Set([
+            ...parseWarnings,
+            ...(detection.warnings ?? []),
+            ...validation.warnings,
+          ])
+        );
+
         const result: CoordinateSearchResult = {
           point,
           projection: detection.projection,
@@ -763,13 +767,7 @@ export const useCoordinateSearch = (options: CoordinateSearchOptions) => {
           format: parseResult.format ?? CoordinateInputFormat.Unknown,
           confidence: detection.confidence,
           alternatives: detection.alternatives,
-          warnings: Array.from(
-            new Set([
-              ...parseWarnings,
-              ...(detection.warnings ?? []),
-              ...validation.warnings,
-            ])
-          ),
+          warnings: combinedWarnings,
         };
 
         // CRITICAL: Check sequence immediately before callback with NO intervening operations
